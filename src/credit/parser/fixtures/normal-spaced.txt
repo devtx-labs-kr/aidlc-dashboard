@@ -1,0 +1,8 @@
+   Credit Usage Report
+
+   Plan       =   Team
+   Used       =   120.5
+   Remaining  =   9879.5
+   Limit      =   10000
+   Usage rate =   1.205 %
+   Reset date =   2026-12-31

@@ -1,0 +1,6 @@
+Plan: Enterprise
+Used: 987654321.99
+Remaining: 12345678.01
+Limit: 1000000000
+Usage: 98.77%
+Resets: 2027-01-01

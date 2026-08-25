@@ -1,0 +1,3 @@
+Usage: kiro-cli chat [options]
+  --no-interactive   run without an interactive prompt
+  --help             show help and exit

@@ -1,0 +1,25 @@
+{
+  "name": "aidlc-dashboard",
+  "description": "Read-only web dashboard for an AI-DLC v2 run: status, progress, blockers, timing, health.",
+  "version": "1.3.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/server.ts",
+    "dev": "bun --watch src/server.ts",
+    "test": "bun test",
+    "typecheck": "bunx tsc -p ./ --noEmit",
+    "lint": "bunx --bun @biomejs/biome check src/",
+    "format": "bunx --bun @biomejs/biome format --write src/",
+    "verify": "bun run typecheck && bun run lint && bun test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "1.9.4",
+    "@types/bun": "1.1.14",
+    "@types/node": "^20.11.0",
+    "typescript": "^5.4.0"
+  },
+  "trustedDependencies": [
+    "@biomejs/biome"
+  ]
+}

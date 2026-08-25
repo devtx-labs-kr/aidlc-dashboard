@@ -1,0 +1,45 @@
+{
+  "workflow_id": "2026-01-01T00:00:00Z",
+  "scope": "demo-migration",
+  "started_at": "2026-01-01T00:00:00Z",
+  "stages": [
+    {
+      "stage_slug": "functional-design",
+      "started_at": "2026-01-01T02:00:00Z",
+      "completed_at": "2026-01-01T03:00:00Z",
+      "agent": "aidlc-developer-agent",
+      "memory_path": "aidlc/spaces/default/intents/260101-demo-migration/construction/functional-design/memory.md",
+      "memory_entries": 2,
+      "memory_breakdown": {
+        "interpretations": 1,
+        "deviations": 0,
+        "tradeoffs": 0,
+        "open_questions": 1
+      },
+      "sensor_firings": [
+        { "id": "required-sections", "fire_id": "aaaa1111", "result": "passed", "ts": "2026-01-01T02:30:00Z" }
+      ],
+      "outcome": "approved",
+      "learnings_captured": { "from_orchestrator": 1, "from_user_addition": 0 }
+    },
+    {
+      "stage_slug": "code-generation",
+      "started_at": "2026-01-01T03:00:00Z",
+      "completed_at": null,
+      "agent": "aidlc-developer-agent",
+      "memory_path": "aidlc/spaces/default/intents/260101-demo-migration/construction/code-generation/memory.md",
+      "memory_entries": null,
+      "memory_breakdown": null,
+      "sensor_firings": [],
+      "outcome": "pending",
+      "learnings_captured": null
+    }
+  ],
+  "bolt_dag": {
+    "units": [
+      { "name": "PU-A-core", "depends_on": [], "kind": "library" },
+      { "name": "PU-B-ui", "depends_on": ["PU-A-core"], "kind": "ui" }
+    ],
+    "batches": [["PU-A-core"], ["PU-B-ui"]]
+  }
+}

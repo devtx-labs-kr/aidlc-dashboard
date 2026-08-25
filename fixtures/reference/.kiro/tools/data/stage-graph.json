@@ -1,0 +1,73 @@
+[
+  {
+    "slug": "workspace-scaffold",
+    "number": "0.1",
+    "name": "Workspace Scaffold",
+    "phase": "initialization",
+    "produces": [],
+    "consumes": [],
+    "sensors": []
+  },
+  {
+    "slug": "intent-capture",
+    "number": "1.1",
+    "name": "Intent Capture",
+    "phase": "ideation",
+    "produces": ["intent-statement", "intent-capture-questions"],
+    "consumes": [],
+    "sensors": ["required-sections", "upstream-coverage"]
+  },
+  {
+    "slug": "units-generation",
+    "number": "2.7",
+    "name": "Units Generation",
+    "phase": "inception",
+    "produces": ["unit-of-work", "unit-of-work-dependency"],
+    "consumes": [],
+    "sensors": ["required-sections"]
+  },
+  {
+    "slug": "functional-design",
+    "number": "3.1",
+    "name": "Functional Design",
+    "phase": "construction",
+    "for_each": "unit-of-work",
+    "produces": ["business-logic-model", "business-rules"],
+    "optional_produces": ["frontend-components"],
+    "produces_kinds": {
+      "business-rules": ["service", "spec", "library"],
+      "frontend-components": ["ui"]
+    },
+    "consumes": [],
+    "sensors": ["required-sections", "type-check"]
+  },
+  {
+    "slug": "infrastructure-design",
+    "number": "3.4",
+    "name": "Infrastructure Design",
+    "phase": "construction",
+    "for_each": "unit-of-work",
+    "produces": ["deployment-architecture"],
+    "consumes": [],
+    "sensors": []
+  },
+  {
+    "slug": "code-generation",
+    "number": "3.5",
+    "name": "Code Generation",
+    "phase": "construction",
+    "for_each": "unit-of-work",
+    "produces": ["code-generation-plan", "code-summary"],
+    "consumes": [],
+    "sensors": ["linter", "type-check"]
+  },
+  {
+    "slug": "deployment-pipeline",
+    "number": "4.1",
+    "name": "Deployment Pipeline",
+    "phase": "operation",
+    "produces": ["pipeline-config"],
+    "consumes": [],
+    "sensors": []
+  }
+]

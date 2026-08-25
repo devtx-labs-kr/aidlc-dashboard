@@ -1,0 +1,7 @@
+Kiro CLI — Credit Usage Summary
+Plan: Pro
+Used: 4553.86
+Remaining: 5446.14
+Limit: 10000
+Usage: 45.5%
+Resets: 2026-09-01
