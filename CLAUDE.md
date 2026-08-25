@@ -131,9 +131,9 @@ despite the README calling it gitignored, so `git add -A` would pick the DB up.
 
 ## Agent memory
 
-The `agent-memory` MCP server is registered at local scope for this project (stdio,
-`<the local binary path>`) — use it as disk-backed persistent
-memory via `mem_write` / `mem_recall`.
+The `agent-memory` MCP server is registered at local scope for this project (stdio; the binary path
+lives in the local MCP config, not in this repo) — use it as disk-backed persistent memory via
+`mem_write` / `mem_recall`.
 
 - **Always pass `project` and `session` explicitly.** Never rely on the server's `active_session`, and
   don't lean on the `project` default either — it is just `basename(cwd)`. Use `project:
@@ -142,8 +142,8 @@ memory via `mem_write` / `mem_recall`.
 - **Older records may be cold memory** — one DB at `~/.agent-memory/memory.db` (registered per
   project) that predates the current Claude Code setup, so early entries can be stale.
 - **Hot memory is this project's Claude Code memory dir**
-  (`~/.claude/projects/<slugified-cwd>/memory/`), auto-derived from cwd — no
-  env vars are set. Don't assume it's current; check the source file when it matters. Never point
+  (`~/.claude/projects/<slugified-cwd>/memory/`), auto-derived from cwd — no env vars are set. Don't
+  assume it's current; check the source file when it matters. Never point
   `AGENT_MEMORY_HOT_PATHS` at another project's memory dir — that relabels their sections under this
   project's name and silently corrupts `project=` filtering.
 - Store durable decisions, rationale, outcomes, and canonical references only. Never store
