@@ -93,6 +93,17 @@ h2 { margin:0; font-size:13px; font-weight:650; }
 .notice { margin:0 0 14px; padding:9px 11px; border-left:3px solid var(--bad); color:var(--bad); }
 .truncated { margin:10px 0 0; color:var(--warn); font-size:11.5px; }
 .manual-form { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; }
+/* A real label, not a placeholder. A placeholder disappears the moment the user
+   starts typing, which is exactly when a path field is easiest to lose track of. */
+.field-label { display:block; margin:0 0 5px; color:var(--mute); font-size:11.5px; }
+.manual-form .field-label { grid-column:1 / -1; margin:0; }
+/* The toolbar filter keeps its label off-screen: it sits in a tight row next to a
+   magnifier glyph, and a visible label there would push the explorer controls apart.
+   Screen readers still get it, which is the part the placeholder could not carry. */
+.field-label.sr {
+  position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden;
+  clip-path:inset(50%); white-space:nowrap; border:0;
+}
 input {
   width:100%; min-width:0; height:40px; padding:0 11px; border:1px solid var(--line);
   border-radius:6px; background:var(--panel); color:var(--fg); font-size:12px;
@@ -304,8 +315,9 @@ function renderExplorer(
     </div>
     <div class="explorer-tools">
       <div class="filter-wrap">
+        <label class="field-label sr" for="directory-filter">현재 폴더에서 디렉터리 이름 필터</label>
         <span class="filter-icon" aria-hidden="true">⌕</span>
-        <input id="directory-filter" type="search" aria-label="현재 폴더에서 디렉터리 이름 필터"
+        <input id="directory-filter" type="search"
                placeholder="폴더 이름 필터" autocomplete="off" spellcheck="false">
         <button id="clear-directory-filter" class="filter-clear" type="button"
                 aria-label="필터 지우기" title="필터 지우기" hidden>×</button>
@@ -369,7 +381,8 @@ export function renderPicker(
       <div class="section-head"><h2 id="manual-title">경로로 열기</h2></div>
       ${browse.error ? `<p class="notice" role="alert">${esc(browse.error)}</p>` : ""}
       <form class="manual-form" action="/select" method="get">
-        <input name="dir" aria-label="워크스페이스 경로"
+        <label class="field-label" for="manual-dir">워크스페이스 경로</label>
+        <input id="manual-dir" name="dir"
                placeholder="/Users/me/Development/project"
                value="${browse.isWorkspace ? esc(browse.dir) : ""}"
                autocomplete="off" spellcheck="false">
