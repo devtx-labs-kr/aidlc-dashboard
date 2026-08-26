@@ -29,6 +29,7 @@ import { browse, resolveWorkspace } from "./scan/browse";
 import { buildExplorer } from "./scan/explorer";
 import { openArtifact } from "./scan/open-file";
 import { discoverWorkspaces } from "./scan/workspaces";
+import { VERSION } from "./version";
 
 /** Path the u3 credit view's no-JS refresh form POSTs to (must match verbatim). */
 const REFRESH_PATH = "/api/credit/refresh";
@@ -457,6 +458,6 @@ if (import.meta.main) {
   });
 
   console.log(
-    `[aidlc-dashboard] http://${HOST}:${server.port}  (poll ${opts.pollMs}ms, collect ${opts.intervalMs}ms, workspace read-only${credit.degraded ? ", credit degraded" : ""})`,
+    `[aidlc-dashboard] v${VERSION} · http://${HOST}:${server.port}  (poll ${opts.pollMs}ms, collect ${opts.intervalMs}ms, workspace read-only${credit.degraded ? ", credit degraded" : ""})`,
   );
 }

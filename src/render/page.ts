@@ -12,6 +12,7 @@
 import { renderTokens } from "../credit/claude/token-view";
 import { renderCredit } from "../credit/view/credit-view";
 import type { DashboardModel } from "../model/types";
+import { VERSION } from "../version";
 import { esc } from "./common";
 import { renderHealth } from "./health";
 import { renderOverview } from "./overview";
@@ -489,7 +490,7 @@ export function renderPage(m: DashboardModel, pollMs: number): string {
 <main id="body-wrap">
 ${renderBody(m)}
 </main>
-<footer>읽기 전용 — 이 대시보드는 워크스페이스에 쓰지 않음.</footer>
+<footer>읽기 전용 — 이 대시보드는 워크스페이스에 쓰지 않음. · v${esc(VERSION)}</footer>
 <script>${SCRIPT(pollMs)}</script>
 </body>
 </html>`;

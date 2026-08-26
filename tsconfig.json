@@ -2,7 +2,9 @@
   "compilerOptions": {
     "module": "esnext",
     "target": "ES2022",
-    "lib": ["ES2022"],
+    "lib": [
+      "ES2022"
+    ],
     "noEmit": true,
     "sourceMap": true,
     "moduleResolution": "bundler",
@@ -10,7 +12,6 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
@@ -19,9 +20,16 @@
     "noUnusedParameters": true,
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
-
-    "types": ["bun"]
+    "types": [
+      "bun"
+    ]
   },
-  "include": ["src"],
-  "exclude": ["node_modules", "fixtures"]
+  "include": [
+    "src",
+    "scripts"
+  ],
+  "exclude": [
+    "node_modules",
+    "fixtures"
+  ]
 }

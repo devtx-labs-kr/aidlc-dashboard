@@ -9,9 +9,10 @@
     "dev": "bun --watch src/server.ts",
     "test": "bun test",
     "typecheck": "bunx tsc -p ./ --noEmit",
-    "lint": "bunx --bun @biomejs/biome check src/",
-    "format": "bunx --bun @biomejs/biome format --write src/",
-    "verify": "bun run typecheck && bun run lint && bun test"
+    "lint": "bunx --bun @biomejs/biome check src/ scripts/",
+    "format": "bunx --bun @biomejs/biome format --write src/ scripts/",
+    "verify": "bun run typecheck && bun run lint && bun test",
+    "package": "bun run scripts/package.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "1.9.4",
