@@ -14,6 +14,7 @@
 // So a panel says where its numbers came from and how old they are, and a stale
 // source is called stale on screen rather than quietly averaged in.
 
+import type { TokenViewModel } from "../credit/claude/token-model";
 import type { CreditViewModel } from "../credit/view/credit-model";
 import type { StageArtifact } from "../scan/artifacts";
 import type { HealthReport } from "../scan/hooks-health";
@@ -104,6 +105,33 @@ export interface GateSummary {
   jumps: number;
 }
 
+/**
+ * Which usage panel to show. `auto` resolves from the harness dir the workspace
+ * carries; `kiro`/`claude` pin it.
+ *
+ * Why an override exists rather than harness detection alone: the two providers
+ * measure different things (Kiro reports a remote quota, Claude Code reports
+ * local token counts), and a dev tree can hold `.kiro` and `.claude` side by
+ * side — in which case catalogue probe order, not the reader's intent, would pick
+ * the panel. `auto` still does the obvious thing; the flag exists for the tree
+ * where the obvious thing is ambiguous.
+ */
+export type UsageMode = "auto" | "kiro" | "claude";
+
+/**
+ * The usage panel, discriminated by provider. A union rather than two optional
+ * fields: exactly one provider is shown, and the type should not be able to say
+ * otherwise.
+ *
+ * `kiro` carries the credit/quota view (u3 `CreditViewModel`, fed by the polled
+ * `kiro-cli /usage` snapshots). `claude` carries the token view, aggregated from
+ * local Claude Code transcripts — no quota exists there, so the panel reports
+ * measured tokens instead of a percentage of an unknown limit.
+ */
+export type UsageView =
+  | { kind: "kiro"; credit: CreditViewModel }
+  | { kind: "claude"; tokens: TokenViewModel };
+
 /** Everything the page needs. Serialised verbatim as /api/model. */
 export interface DashboardModel {
   /** ISO timestamp of this assembly — the clock all ages are relative to. */
@@ -119,13 +147,11 @@ export interface DashboardModel {
   blockers: Blocker[];
   gates: GateSummary;
   /**
-   * Credit-usage view for the top-of-page panel (u3-owned view-model, wired here
-   * by u4). Always present — a run with no collected credit data degrades to a
-   * `status: "none"` model rather than an absent slot, so the renderer never has
-   * to guard for it. The container is host-owned; the value type is imported from
-   * u3 (`../credit/view/credit-model`) — a one-way u4→u3 dependency.
+   * Usage view for the top-of-page panel. Always present — a run with no usage
+   * data degrades to an empty view of the resolved kind rather than an absent
+   * slot, so the renderer never has to guard for it.
    */
-  credit: CreditViewModel;
+  usage: UsageView;
   /** Audit event counts by type, for the stream filter. */
   eventCounts: [string, number][];
   /** Newest audit events, for the stream panel (bounded — see assemble.ts). */

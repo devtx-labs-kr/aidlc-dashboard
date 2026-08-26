@@ -7,6 +7,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { UsageMode } from "./model/types";
 
 /**
  * Resolve a path, expanding a leading `~`. The shell does this for a typed
@@ -38,6 +39,12 @@ export interface Options {
    * probe order would pick the wrong one.
    */
   harnessDir?: string;
+  /**
+   * Which usage panel to show. Default `auto` — resolved from the harness dir,
+   * since a Kiro run's usage lives in a remote quota and a Claude Code run's
+   * lives in local transcripts.
+   */
+  usageMode: UsageMode;
 }
 
 export const DEFAULT_PORT = 4321;
@@ -64,11 +71,15 @@ usage:
   --harness <dir>   harness dir for the stage catalogue (e.g. .kiro / .claude /
                     .aidlc). Auto-discovered; pass this only when a tree holds
                     several and the probe picks the wrong one.
+  --usage <mode>    usage panel: auto (default) | kiro | claude. auto follows the
+                    harness dir — .claude shows Claude Code token counts read from
+                    local transcripts, anything else shows kiro-cli credit quota.
   --help            this message
 
 Harness-agnostic: the dashboard reads the aidlc/ docs tree, which is identical
-across Kiro CLI, Kiro IDE and Claude Code. The workspace is read-only;
-credit snapshots are stored separately under data/.`;
+across Kiro CLI, Kiro IDE and Claude Code. The one panel that differs is usage,
+because the two harnesses expose it differently — see --usage. The workspace is
+read-only; credit snapshots are stored separately under data/.`;
 
 export class UsageError extends Error {}
 
@@ -97,6 +108,7 @@ export function parseArgs(
   let pollMs = DEFAULT_POLL_MS;
   let intervalMs = intEnv(env[ENV_INTERVAL_MS]) ?? DEFAULT_INTERVAL_MS;
   let harnessDir: string | undefined;
+  let usageMode: UsageMode = "auto";
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -119,6 +131,15 @@ export function parseArgs(
         harnessDir = argv[++i];
         if (harnessDir === undefined) throw new UsageError("--harness 에 디렉터리 이름 필요");
         break;
+      case "--usage": {
+        const raw = argv[++i];
+        if (raw === undefined) throw new UsageError("--usage 에 값 필요 (auto|kiro|claude)");
+        if (raw !== "auto" && raw !== "kiro" && raw !== "claude") {
+          throw new UsageError(`--usage 는 auto|kiro|claude 중 하나여야 함: ${raw}`);
+        }
+        usageMode = raw;
+        break;
+      }
       case "--help":
       case "-h":
         throw new UsageError("");
@@ -128,7 +149,9 @@ export function parseArgs(
   }
 
   // No --root: start anyway and let the user pick in the browser.
-  if (root === undefined) return { root: undefined, port, pollMs, intervalMs, harnessDir };
+  if (root === undefined) {
+    return { root: undefined, port, pollMs, intervalMs, harnessDir, usageMode };
+  }
 
   const abs = expandHome(root);
   if (!fs.existsSync(abs)) throw new UsageError(`경로 없음: ${abs}`);
@@ -142,5 +165,5 @@ export function parseArgs(
     throw new UsageError(`--harness 로 지정한 디렉터리 없음: ${path.join(abs, harnessDir)}`);
   }
 
-  return { root: abs, port, pollMs, intervalMs, harnessDir };
+  return { root: abs, port, pollMs, intervalMs, harnessDir, usageMode };
 }

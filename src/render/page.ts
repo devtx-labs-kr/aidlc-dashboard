@@ -9,6 +9,7 @@
 // synced copy, and sync tools write via atomic rename, which kqueue/FSEvents can
 // miss. A poll cannot miss anything; the whole read costs ~10ms.
 
+import { renderTokens } from "../credit/claude/token-view";
 import { renderCredit } from "../credit/view/credit-view";
 import type { DashboardModel } from "../model/types";
 import { esc } from "./common";
@@ -267,6 +268,13 @@ table.tbl td code { white-space:nowrap; }
 .credit-progress .note { margin-top:4px; }
 .credit-trend { margin-top:12px; }
 .credit-chart { margin:8px 0 4px; overflow-x:auto; }
+/* Claude token panel — shares the credit card's layout; only the model
+   breakdown table is extra. The share cell stacks a bar over its own number so
+   the column reads without relying on the bar's length alone. */
+.token-models { margin-top:12px; }
+.token-models th, .token-models td { white-space:nowrap; }
+.token-share { min-width:110px; }
+.token-share .note { margin-top:2px; }
 .window-toggle { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
 .window-toggle a { text-decoration:none; }
 .window-toggle a[aria-checked="true"] { border-color:var(--accent); color:var(--accent); }
@@ -432,11 +440,18 @@ export function renderBody(m: DashboardModel): string {
     let i = 0;
     return html.replace(/<details/g, () => `<details data-key="${prefix}-${i++}"`);
   };
-  // Credit leads the primary column, followed by the decisions that explain the
+  // Usage leads the primary column, followed by the decisions that explain the
   // run. Overview cards lead the secondary column and provide context for timing.
+  // Which usage panel renders is resolved during assembly (model.usage), so the
+  // renderer just dispatches on the discriminant — the two panels share the card
+  // slot, the `?cw=` window contract and the `credit-*` CSS.
+  const usage =
+    m.usage.kind === "claude"
+      ? renderTokens(m.usage.tokens, m.usage.tokens.trend.window)
+      : renderCredit(m.usage.credit, m.usage.credit.trend.window);
   return `${warnings(m)}
 <div class="col primary-col">
-${keyed(renderCredit(m.credit, m.credit.trend.window), "credit")}
+${keyed(usage, "credit")}
 ${keyed(renderHealth(m), "h")}
 </div>
 <div class="col secondary-col">

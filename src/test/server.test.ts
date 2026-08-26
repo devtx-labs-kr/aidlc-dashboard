@@ -13,8 +13,9 @@ import { type Options, parseArgs } from "../cli";
 import type { Pollable } from "../credit/pipeline/polling-scheduler";
 import type { RefreshResult } from "../credit/pipeline/refresh-pipeline";
 import type { CaptureSource, CreditSnapshot, ParsedUsage } from "../credit/types";
-import type { CreditReadStore } from "../credit/view/credit-model";
-import { type CreditContext, assemble } from "../model/assemble";
+import type { CreditReadStore, CreditViewModel } from "../credit/view/credit-model";
+import { type UsageContext, assemble } from "../model/assemble";
+import type { DashboardModel } from "../model/types";
 import { type CreditRuntime, bootCredit, handle, shutdownCredit } from "../server";
 
 const FIXTURE = path.join(import.meta.dir, "..", "..", "fixtures", "reference");
@@ -64,39 +65,50 @@ function throwingStore(): CreditReadStore {
   };
 }
 
-// ── assemble credit slot ────────────────────────────────────────────────────
+/**
+ * Narrow `model.usage` to the Kiro credit view. The reference fixture ships a
+ * `.kiro` harness dir, so `auto` resolves to the credit panel — asserting the
+ * discriminant here keeps that assumption honest instead of casting past it.
+ */
+function creditOf(m: DashboardModel): CreditViewModel {
+  if (m.usage.kind !== "kiro")
+    throw new Error(`expected the kiro usage panel, got ${m.usage.kind}`);
+  return m.usage.credit;
+}
+
+// ── assemble usage slot (kiro side) ─────────────────────────────────────────
 
 describe("assemble credit slot", () => {
-  test("no creditCtx → status 'none' (existing callers unaffected)", () => {
+  test("no usageCtx → status 'none' (existing callers unaffected)", () => {
     const m = assemble(FIXTURE);
-    expect(m.credit.status).toBe("none");
-    expect(m.credit.current).toBeNull();
+    expect(creditOf(m).status).toBe("none");
+    expect(creditOf(m).current).toBeNull();
     // The rest of the model still assembles.
     expect(m.identity.record).toBe("260101-demo-migration");
   });
 
   test("creditCtx with a fresh success snapshot → status reflects the store", () => {
-    const ctx: CreditContext = { store: stubStore([freshOkSnapshot()]), window: "30d" };
+    const ctx: UsageContext = { store: stubStore([freshOkSnapshot()]), window: "30d" };
     const m = assemble(FIXTURE, undefined, ctx);
-    expect(m.credit.status).toBe("ok");
-    expect(m.credit.current).not.toBeNull();
-    expect(m.credit.current?.planName).toBe("Pro");
-    expect(m.credit.trend.window).toBe("30d");
+    expect(creditOf(m).status).toBe("ok");
+    expect(creditOf(m).current).not.toBeNull();
+    expect(creditOf(m).current?.planName).toBe("Pro");
+    expect(creditOf(m).trend.window).toBe("30d");
   });
 
   test("store throw → degrade to none + warning, rest of model intact (BR1.4)", () => {
-    const ctx: CreditContext = { store: throwingStore(), window: "7d" };
+    const ctx: UsageContext = { store: throwingStore(), window: "7d" };
     const m = assemble(FIXTURE, undefined, ctx);
-    expect(m.credit.status).toBe("none");
-    expect(m.credit.trend.window).toBe("7d"); // degrade preserves the asked window
+    expect(creditOf(m).status).toBe("none");
+    expect(creditOf(m).trend.window).toBe("7d"); // degrade preserves the asked window
     expect(m.warnings.some((w) => w.includes("크레딧 조립 실패"))).toBe(true);
     // Non-credit sections are unharmed.
     expect(m.state.overallPct).toBe(80);
   });
 
   test("the ?cw window is threaded into the assembled trend", () => {
-    const ctx: CreditContext = { store: stubStore([freshOkSnapshot()]), window: "all" };
-    expect(assemble(FIXTURE, undefined, ctx).credit.trend.window).toBe("all");
+    const ctx: UsageContext = { store: stubStore([freshOkSnapshot()]), window: "all" };
+    expect(creditOf(assemble(FIXTURE, undefined, ctx)).trend.window).toBe("all");
   });
 });
 
@@ -236,7 +248,7 @@ describe("handle routing", () => {
     const res = await get("/api/model", { store: stubStore([freshOkSnapshot()]) });
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({
-      credit: { status: "ok", current: { planName: "Pro" } },
+      usage: { kind: "kiro", credit: { status: "ok", current: { planName: "Pro" } } },
     });
   });
 

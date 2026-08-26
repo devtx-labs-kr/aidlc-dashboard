@@ -78,6 +78,33 @@ export function findHarnessDir(root: string): string | undefined {
 }
 
 /**
+ * Every harness dir under `root` that ships a catalogue, in probe order.
+ *
+ * `findHarnessDir` returns only the winner, which is all the catalogue reader
+ * needs. The usage panel needs the full list: when a dev tree holds both `.kiro`
+ * and `.claude`, probe order silently decides which usage provider `auto` picks,
+ * and that decision has to be stated on screen rather than guessed at.
+ */
+export function harnessDirsWithCatalog(root: string): string[] {
+  const found: string[] = [];
+  for (const h of KNOWN_HARNESS_DIRS) {
+    if (hasCatalog(root, h)) found.push(h);
+  }
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return found;
+  }
+  for (const e of entries) {
+    if (!e.isDirectory() || !isHarnessDirName(e.name)) continue;
+    if ((KNOWN_HARNESS_DIRS as readonly string[]).includes(e.name)) continue; // already probed
+    if (hasCatalog(root, e.name)) found.push(e.name);
+  }
+  return found;
+}
+
+/**
  * One stage row. Only the fields this dashboard consumes are typed; the file
  * carries more (condition/inputs/outputs/rules_in_context/reviewer/...) which we
  * pass over rather than mirror, so a catalogue that grows a field still parses.

@@ -11,6 +11,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { UsageError, expandHome, parseArgs } from "../cli";
+import { projectSlug } from "../credit/claude/transcript-reader";
 import { NoRunError, assemble } from "../model/assemble";
 import { renderBody, renderPage } from "../render/page";
 import { renderPicker } from "../render/picker";
@@ -279,14 +280,18 @@ describe("render", () => {
     // non-contract external text this dashboard shows — kiro-cli /usage output
     // (warning.raw / warning.reason). Hostile markup there must be escaped by
     // renderBody just as the blocker heading used to be.
+    if (m.usage.kind !== "kiro") throw new Error("fixture should resolve to the kiro panel");
     const hostile = {
       ...m,
-      credit: {
-        ...m.credit,
-        status: "failure" as const,
-        warning: {
-          raw: '<script>alert("x")</script>',
-          reason: '<img src=x onerror="alert(1)">',
+      usage: {
+        kind: "kiro" as const,
+        credit: {
+          ...m.usage.credit,
+          status: "failure" as const,
+          warning: {
+            raw: '<script>alert("x")</script>',
+            reason: '<img src=x onerror="alert(1)">',
+          },
         },
       },
     };
@@ -843,5 +848,180 @@ describe("stage artifacts", () => {
       for (const f of files) expect(f.rel.endsWith(f.name)).toBe(true);
     }
     expect(path.isAbsolute(m.identity.recordDir)).toBe(true);
+  });
+});
+
+// The docs tree is harness-neutral, but usage is NOT: Kiro exposes a remote
+// credit quota while Claude Code leaves local token counts in its transcripts. So
+// exactly one panel renders, chosen during assembly. These tests pin that choice —
+// the auto rule, the override, and the coexistence case where probe order would
+// otherwise decide silently.
+describe("usage panel selection", () => {
+  /** Fixture copy whose harness dirs are named by the caller. */
+  function treeWith(...harnesses: string[]): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aidlc-usage-"));
+    fs.cpSync(path.join(FIXTURE, "aidlc"), path.join(dir, "aidlc"), { recursive: true });
+    for (const h of harnesses) {
+      fs.cpSync(path.join(FIXTURE, ".kiro"), path.join(dir, h), { recursive: true });
+    }
+    return dir;
+  }
+
+  /** A home dir holding one synthetic Claude transcript for `root`. */
+  function homeWithTranscript(root: string, outputTokens: number): string {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "aidlc-home-"));
+    const dir = path.join(home, ".claude", "projects", projectSlug(root));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "s.jsonl"),
+      `${JSON.stringify({
+        type: "assistant",
+        timestamp: new Date().toISOString(),
+        sessionId: "s1",
+        cwd: root,
+        message: {
+          model: "claude-opus-5",
+          usage: { input_tokens: 5, output_tokens: outputTokens },
+        },
+      })}\n`,
+    );
+    return home;
+  }
+
+  test("auto + `.kiro` → the credit panel", () => {
+    expect(assemble(FIXTURE).usage.kind).toBe("kiro");
+  });
+
+  test("auto + `.claude` → the token panel", () => {
+    const dir = treeWith(".claude");
+    try {
+      const m = assemble(dir, undefined, { window: "30d" });
+      expect(m.usage.kind).toBe("claude");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("auto + no harness dir at all → the credit panel (its own empty view)", () => {
+    const dir = treeWith();
+    try {
+      const m = assemble(dir, undefined, { window: "30d" });
+      expect(m.usage.kind).toBe("kiro");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("--usage overrides the harness in both directions", () => {
+    expect(assemble(FIXTURE, undefined, { window: "30d", mode: "claude" }).usage.kind).toBe(
+      "claude",
+    );
+    const dir = treeWith(".claude");
+    try {
+      expect(assemble(dir, undefined, { window: "30d", mode: "kiro" }).usage.kind).toBe("kiro");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("coexisting harness dirs warn that probe order made the choice", () => {
+    const dir = treeWith(".kiro", ".claude");
+    try {
+      const m = assemble(dir, undefined, { window: "30d" });
+      // `.claude` wins the probe, so the token panel is what renders...
+      expect(m.usage.kind).toBe("claude");
+      // ...and that is stated, naming both dirs and the flag that overrides it.
+      const warning = m.warnings.find((w) => w.includes("공존"));
+      expect(warning).toBeDefined();
+      expect(warning).toContain(".claude");
+      expect(warning).toContain(".kiro");
+      expect(warning).toContain("--usage kiro");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an explicit --usage does NOT warn about coexistence (the choice was made)", () => {
+    const dir = treeWith(".kiro", ".claude");
+    try {
+      const m = assemble(dir, undefined, { window: "30d", mode: "claude" });
+      expect(m.warnings.some((w) => w.includes("공존"))).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the token panel reads the workspace's own transcripts and renders them", () => {
+    const dir = treeWith(".claude");
+    const home = homeWithTranscript(dir, 4242);
+    try {
+      const m = assemble(dir, undefined, { window: "30d", home });
+      if (m.usage.kind !== "claude") throw new Error("expected the token panel");
+      expect(m.usage.tokens.totals.output).toBe(4242);
+      expect(m.usage.tokens.sessions).toBe(1);
+      expect(m.usage.tokens.status).toBe("ok");
+      // ...and it reaches the page instead of the credit card.
+      const body = renderBody(m);
+      expect(body).toContain("토큰 사용량");
+      expect(body).toContain("4,242");
+      expect(body).not.toContain("플랜 한도");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("no transcripts for the workspace → none + the path it tried, not a crash", () => {
+    const dir = treeWith(".claude");
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "aidlc-home-"));
+    try {
+      const m = assemble(dir, undefined, { window: "30d", home });
+      if (m.usage.kind !== "claude") throw new Error("expected the token panel");
+      expect(m.usage.tokens.status).toBe("none");
+      expect(m.usage.tokens.dir).toBeNull();
+      expect(m.usage.tokens.notes.join(" ")).toContain(projectSlug(dir));
+      // The rest of the model is untouched by an empty usage panel.
+      expect(m.state.overallPct).toBe(80);
+      expect(m.totalEvents).toBeGreaterThan(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+// The usage kind must follow the harness that was ASKED FOR, not the one the
+// catalogue managed to report. A broken stage-graph.json leaves no catalogue, and
+// reading the kind off it would silently show a Kiro credit panel for a Claude run.
+describe("usage kind survives a broken catalogue", () => {
+  function treeWithBrokenCatalog(harness: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aidlc-broken-"));
+    fs.cpSync(path.join(FIXTURE, "aidlc"), path.join(dir, "aidlc"), { recursive: true });
+    const data = path.join(dir, harness, "tools", "data");
+    fs.mkdirSync(data, { recursive: true });
+    fs.writeFileSync(path.join(data, "stage-graph.json"), "{ this is not json");
+    return dir;
+  }
+
+  test("--harness .claude + unparseable catalogue → still the token panel", () => {
+    const dir = treeWithBrokenCatalog(".claude");
+    try {
+      const m = assemble(dir, ".claude", { window: "30d" });
+      expect(m.identity.harnessDir).toBeUndefined(); // the catalogue really did fail
+      expect(m.usage.kind).toBe("claude");
+      // ...and the catalogue failure is still reported on its own terms.
+      expect(m.warnings.some((w) => w.includes("stage-graph.json"))).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("auto + discovered `.claude` with unparseable catalogue → still the token panel", () => {
+    const dir = treeWithBrokenCatalog(".claude");
+    try {
+      expect(assemble(dir, undefined, { window: "30d" }).usage.kind).toBe("claude");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -15,12 +15,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { HOST, type Options, USAGE, UsageError, expandHome, parseArgs } from "./cli";
+import { createMemo } from "./credit/claude/transcript-reader";
 import { type Pollable, PollingScheduler } from "./credit/pipeline/polling-scheduler";
 import { type PipelineStore, RefreshPipeline } from "./credit/pipeline/refresh-pipeline";
 import { SnapshotStore } from "./credit/storage/snapshot-store";
 import { type CreditReadStore, assembleCredit } from "./credit/view/credit-model";
 import { resolveWindow } from "./credit/view/credit-view";
-import { type CreditContext, NoRunError, assemble } from "./model/assemble";
+import { NoRunError, type UsageContext, assemble } from "./model/assemble";
 import { esc } from "./render/common";
 import { renderBody, renderPage } from "./render/page";
 import { renderPicker } from "./render/picker";
@@ -71,6 +72,18 @@ h1{font-size:17px}a{color:#2f6fd0}</style></head>
 
 /** The workspace currently being shown. Mutated only by /select. */
 let activeRoot: string | undefined;
+
+/**
+ * Per-file memo for the Claude transcript reader, held for the process lifetime.
+ *
+ * This is NOT a second piece of mutable state in the sense `activeRoot` is: its
+ * keys are `(path, size, mtimeMs)`, so it cannot answer differently from a cold
+ * read of the same files. Claude Code transcripts are append-only, which means an
+ * edit always moves size and mtime and therefore always misses the memo. It buys
+ * back the cost of re-parsing unchanged transcripts on every 60s poll (measured:
+ * 410ms for a 217MB 30-day window) without introducing a staleness window.
+ */
+const transcriptMemo = createMemo();
 
 /**
  * The credit subsystem the request handler sees. Both fields are optional: when
@@ -139,16 +152,18 @@ export async function handle(
 
   const showHidden = url.searchParams.get("hidden") === "1";
 
-  // Credit context for the two rendering routes: the store plus the sanitised
-  // trend window from `?cw=` (invalid/absent → 30d, BR5.2). Undefined when the
-  // subsystem is not wired, which makes `assemble` produce a `none` credit view.
-  const creditCtx: CreditContext | undefined = credit.store
-    ? {
-        store: credit.store,
-        window: resolveWindow(url.searchParams.get("cw")),
-        collecting: credit.isCollecting?.() ?? false,
-      }
-    : undefined;
+  // Usage context for the rendering routes: the Kiro store (when wired) plus the
+  // sanitised trend window from `?cw=` (invalid/absent → 30d, BR5.2). Always
+  // built now, not only when a store exists — the Claude token panel needs no
+  // store, so gating the whole context on `credit.store` would silently disable
+  // it. `assemble` still degrades the Kiro side to a `none` view on its own.
+  const usageCtx: UsageContext = {
+    store: credit.store,
+    window: resolveWindow(url.searchParams.get("cw")),
+    collecting: credit.isCollecting?.() ?? false,
+    mode: opts.usageMode,
+    memo: transcriptMemo,
+  };
 
   try {
     switch (url.pathname) {
@@ -212,13 +227,13 @@ export async function handle(
             ),
           );
         }
-        return html(renderPage(assemble(activeRoot, opts.harnessDir, creditCtx), opts.pollMs));
+        return html(renderPage(assemble(activeRoot, opts.harnessDir, usageCtx), opts.pollMs));
       }
 
       case "/api/body": {
         if (!activeRoot) return html('<p class="note">워크스페이스 미선택.</p>');
         // Just the refreshable region — what the browser poll swaps in.
-        return html(renderBody(assemble(activeRoot, opts.harnessDir, creditCtx)));
+        return html(renderBody(assemble(activeRoot, opts.harnessDir, usageCtx)));
       }
 
       case "/api/current": {
@@ -252,7 +267,7 @@ export async function handle(
 
       case "/api/model": {
         if (!activeRoot) return json({ error: "no workspace selected" }, 409);
-        return json(assemble(activeRoot, opts.harnessDir, creditCtx));
+        return json(assemble(activeRoot, opts.harnessDir, usageCtx));
       }
 
       // ---- open an artifact in the user's editor ----------------------------

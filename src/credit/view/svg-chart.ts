@@ -34,6 +34,11 @@ function fmt(n: number | null): string {
 export interface ChartOptions {
   width?: number;
   height?: number;
+  /**
+   * 접근성 라벨 override. 기본값(`buildAriaLabel`)은 "누적 사용량 추이" 문구를 쓰므로,
+   * 같은 차트를 다른 지표(예: 일별 토큰 총량)에 재사용할 때 지정한다.
+   */
+  ariaLabel?: string;
 }
 
 /** 추이 라인 차트를 SVG 문자열로 렌더한다. 결측(value=null)은 선을 끊는다. */
@@ -47,7 +52,7 @@ export function renderLineChart(series: TrendSeries, opts: ChartOptions = {}): s
   const windowLabel = WINDOW_LABEL[series.window];
   const valued = series.points.filter((p) => p.value !== null);
 
-  const ariaLabel = buildAriaLabel(series, windowLabel);
+  const ariaLabel = opts.ariaLabel ?? buildAriaLabel(series, windowLabel);
 
   if (valued.length === 0) {
     // 값 있는 지점이 없으면 축만 그리고 안내.

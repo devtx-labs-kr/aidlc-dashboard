@@ -10,6 +10,8 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { type TokenViewModel, assembleTokens } from "../credit/claude/token-model";
+import { type TranscriptMemo, readTranscripts } from "../credit/claude/transcript-reader";
 import type { TrendWindow } from "../credit/trend/trend";
 import {
   type CreditReadStore,
@@ -25,24 +27,70 @@ import { parseState } from "../scan/parser";
 import { readQuestions } from "../scan/questions";
 import { resolveState } from "../scan/resolve";
 import { readSensorReport } from "../scan/sensors";
-import { type StageCatalog, readStageCatalog } from "../scan/stage-catalog";
+import { type StageCatalog, harnessDirsWithCatalog, readStageCatalog } from "../scan/stage-catalog";
 import { buildTiming } from "../scan/timing";
 import { buildProvenance, graphLastEvent } from "./freshness";
-import type { Blocker, DashboardModel, GateSummary, RunIdentity } from "./types";
+import type {
+  Blocker,
+  DashboardModel,
+  GateSummary,
+  RunIdentity,
+  UsageMode,
+  UsageView,
+} from "./types";
 
 /** Newest events kept for the stream panel. The full ledger stays server-side. */
 const RECENT_EVENT_LIMIT = 300;
 
 /**
- * What the host injects so `assemble` can fill the credit slot: the read-only
- * snapshot store (u1) and the trend window the request asked for (u4 parses
- * `?cw=`). Optional — omitted, the credit slot degrades to a `none` view, which
- * keeps every existing caller and test that never passes it working unchanged.
+ * What the host injects so `assemble` can fill the usage slot: the read-only
+ * snapshot store (u1, Kiro side), the trend window the request asked for (u4
+ * parses `?cw=`), and the per-file memo the Claude side reuses across polls.
+ * Optional — omitted, the usage slot degrades to an empty view of the resolved
+ * kind, which keeps every caller and test that never passes it working unchanged.
  */
-export interface CreditContext {
-  store: CreditReadStore;
+export interface UsageContext {
+  /** Kiro snapshot store. Absent → the credit view degrades to `none`. */
+  store?: CreditReadStore;
   window: TrendWindow;
   collecting?: boolean;
+  /** Which panel to show. Default `auto` (resolved from the harness dir). */
+  mode?: UsageMode;
+  /** Claude transcript memo, held by the host for the process lifetime. */
+  memo?: TranscriptMemo;
+  /** Home dir override (tests). */
+  home?: string;
+}
+
+/**
+ * Which usage provider to run. `auto` reads the harness dir: a workspace whose
+ * catalogue came from `.claude` was driven by Claude Code, so its usage lives in
+ * Claude Code's transcripts. Anything else — including no harness dir at all —
+ * falls back to the Kiro credit panel, which degrades to an empty view on its own
+ * when nothing has been collected.
+ */
+function resolveUsageKind(mode: UsageMode, harnessDir: string | undefined): "kiro" | "claude" {
+  if (mode !== "auto") return mode;
+  return harnessDir === ".claude" ? "claude" : "kiro";
+}
+
+/** The empty token view used when Claude assembly fails. */
+function emptyTokens(window: TrendWindow): TokenViewModel {
+  return {
+    status: "none",
+    totals: { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, thinking: 0 },
+    grandTotal: 0,
+    byModel: [],
+    messages: 0,
+    sidechainMessages: 0,
+    sessions: 0,
+    trend: { window, points: [], summary: { latest: null, min: null, max: null, count: 0 } },
+    lastActivityAt: null,
+    firstActivityAt: null,
+    dir: null,
+    triedPath: "",
+    notes: [],
+  };
 }
 
 /** The empty credit view used when no store is wired or assembly fails (BR1.4). */
@@ -189,11 +237,15 @@ function eventDetail(fields: Record<string, string>): string | undefined {
  * tree is identical across Kiro CLI/IDE and Claude Code). Throws
  * NoRunError only when no intent record can be resolved; every other failure
  * becomes a warning.
+ *
+ * The docs tree stays harness-neutral; the ONE panel that is not is usage, since
+ * the two harnesses expose usage through different mechanisms. `usageCtx.mode`
+ * picks the panel (default `auto` — see resolveUsageKind).
  */
 export function assemble(
   root: string,
   harnessDir?: string,
-  creditCtx?: CreditContext,
+  usageCtx?: UsageContext,
 ): DashboardModel {
   const resolved = resolveState(root);
   if (resolved.kind !== "ok") throw new NoRunError(resolved.kind, root);
@@ -205,10 +257,17 @@ export function assemble(
   const recordDir = path.dirname(statePath);
   const graphPath = path.join(recordDir, "runtime-graph.json");
 
+  // Discover every harness dir that ships a catalogue ONCE. The first entry is the
+  // same winner `findHarnessDir` would pick (identical probe order), and the full
+  // list is what the usage panel needs to notice coexistence — so doing it here
+  // replaces two separate directory scans with one.
+  const harnesses = harnessDirsWithCatalog(root);
+  const discoveredHarness = harnessDir ?? harnesses[0];
+
   // FIRST: the catalogue, so audit attribution can consult it.
   let catalog: StageCatalog | undefined;
   try {
-    catalog = readStageCatalog(root, harnessDir);
+    catalog = readStageCatalog(root, discoveredHarness);
   } catch {
     catalog = undefined;
   }
@@ -333,27 +392,52 @@ export function assemble(
     ...readRegistry(root, space, record),
   };
 
-  // Credit slot. Wired only when the host injects a store; otherwise a `none`
-  // view. Assembly reads the store (SQLite) and can throw on a corrupt handle,
-  // so it is isolated — a credit failure degrades to `none` and adds a warning
-  // rather than taking down the whole dashboard (BR1.4).
-  let credit: CreditViewModel;
-  if (creditCtx) {
+  // Usage slot. Which provider runs is resolved here, then that provider's
+  // assembly is isolated: both read outside the workspace (SQLite handle / home
+  // dir) and a failure there must degrade the one panel, never the dashboard
+  // (BR1.4 / NFR1.5).
+  const window = usageCtx?.window ?? "30d";
+  const mode = usageCtx?.mode ?? "auto";
+  // Resolve against the harness that was ASKED FOR or discovered, not the one the
+  // catalogue reports: a `--harness .claude` whose stage-graph.json is unreadable
+  // leaves `catalog` undefined, and reading the kind off the catalogue would then
+  // silently show the credit panel for a Claude run.
+  const usageKind = resolveUsageKind(mode, catalog?.harnessDir ?? discoveredHarness);
+  if (mode === "auto" && harnesses.length > 1) {
+    warnings.push(
+      `harness 디렉터리 ${harnesses.join("·")} 가 공존 — 사용량 패널을 ${usageKind === "claude" ? "Claude Code 토큰" : "Kiro 크레딧"}으로 자동 선택했습니다. 다른 쪽을 보려면 --usage ${usageKind === "claude" ? "kiro" : "claude"} 를 지정하세요.`,
+    );
+  }
+
+  let usage: UsageView;
+  if (usageKind === "claude") {
     try {
-      credit = assembleCredit(
-        creditCtx.store,
-        new Date(now),
-        creditCtx.window,
-        creditCtx.collecting,
+      const agg = readTranscripts(root, window, {
+        home: usageCtx?.home,
+        now: new Date(now),
+        memo: usageCtx?.memo,
+      });
+      usage = { kind: "claude", tokens: assembleTokens(agg, window) };
+    } catch (err) {
+      warnings.push(
+        `토큰 사용량 조립 실패 — 사용량 패널만 하락: ${err instanceof Error ? err.message : String(err)}`,
       );
+      usage = { kind: "claude", tokens: emptyTokens(window) };
+    }
+  } else if (usageCtx?.store) {
+    try {
+      usage = {
+        kind: "kiro",
+        credit: assembleCredit(usageCtx.store, new Date(now), window, usageCtx.collecting),
+      };
     } catch (err) {
       warnings.push(
         `크레딧 조립 실패 — 크레딧 패널만 하락: ${err instanceof Error ? err.message : String(err)}`,
       );
-      credit = emptyCredit(creditCtx.window, creditCtx.collecting);
+      usage = { kind: "kiro", credit: emptyCredit(window, usageCtx.collecting) };
     }
   } else {
-    credit = emptyCredit("30d");
+    usage = { kind: "kiro", credit: emptyCredit(window, usageCtx?.collecting) };
   }
 
   const recent = ledger.events
@@ -380,7 +464,7 @@ export function assemble(
     timing,
     blockers: buildBlockers(questions, state.currentStage, now),
     gates: buildGates(ledger, state.revisionCount, timing.awaitingStage),
-    credit,
+    usage,
     eventCounts: [...ledger.counts].sort((a, b) => b[1] - a[1]),
     recentEvents: recent,
     totalEvents: ledger.events.length,
