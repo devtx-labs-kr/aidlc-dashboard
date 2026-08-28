@@ -66,9 +66,9 @@ src/
     browse.ts        directory listing for the picker + workspace detection
     explorer.ts      per-OS root adapters + POSIX/Windows breadcrumbs
     workspaces.ts    bounded auto-discovery under home / dev locations
-    resolve.ts       [copied] active-space/active-intent cursor resolution
-    parser.ts        [copied] aidlc-state.md (+ Revision Count added)
-    matrix.ts        [copied+modified] 3-state unit matrix
+    resolve.ts       active-space/active-intent cursor resolution
+    parser.ts        aidlc-state.md (+ Revision Count)
+    matrix.ts        3-state unit matrix
     stage-catalog.ts harness discovery (open set) + stage-graph.json + per-kind expectations
     audit.ts         merge every shard → time-ordered events
     sensors.ts       audit correlation + failure bodies
@@ -207,13 +207,6 @@ Server-rendered HTML strings, no framework and no build step. `renderPage` emits
 poll script); `renderBody` emits just the region `/api/body` swaps in — the manual button, the timer
 and `visibilitychange` all call the same client `refresh()` so the paths can't drift. Collapsing is
 native `<details>`. Interpolate untrusted values through `esc()` from `render/common.ts`.
-
-### Copied modules — watch for drift
-
-`scan/parser.ts`, `scan/resolve.ts` and `scan/matrix.ts` were copied from `companion-extension/src/`
-(matrix.ts also modified for 3-state). The extension is a separate release track; if its parser
-changes, these must be diffed and reconciled by hand. The trees were deliberately separated so this
-dashboard cannot break the extension's release; the price is drift, paid by hand-diffing.
 
 ### Settled decisions — don't re-litigate without new evidence
 

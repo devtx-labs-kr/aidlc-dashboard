@@ -1,8 +1,3 @@
-// COPIED VERBATIM from companion-extension/src/parser.ts (vsix 2.0.4). The two
-// trees are deliberately independent: the extension ships on its own release
-// cadence and this dashboard must not be able to break it. Cost of that choice
-// is drift — when the extension's parser changes, diff it against this file.
-//
 // Parser for aidlc-docs/aidlc-state.md — the single source of truth for
 // AI-DLC progress. The parsing rules here are ported verbatim from the
 // verified aidlc-statusline.ts hook (extractField / phaseProgress / the
@@ -182,8 +177,8 @@ export interface AidlcState {
   /**
    * `Revision Count` from the Runtime State section — how many times a gate was
    * rejected and a stage sent back. Empty string when the field is absent.
-   * ADDED for the dashboard (not in the extension's copy): rework volume is a
-   * quality signal no other panel carries.
+   * Read for the dashboard specifically: rework volume is a quality signal no
+   * other panel carries.
    */
   revisionCount: string;
   phases: PhaseInfo[];

@@ -1,6 +1,3 @@
-// COPIED VERBATIM from companion-extension/src/resolve.ts (vsix 2.0.4) — see the
-// copy-provenance note in parser.ts for why the trees stay independent.
-//
 // Locate the active intent's aidlc-state.md inside the AI-DLC workspace layout
 // introduced in v2.1.1 and unchanged through v2.2.0 (the engine this panel
 // targets). Each intent owns its own record dir and state file:

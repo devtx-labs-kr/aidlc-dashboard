@@ -1,8 +1,3 @@
-// COPIED from companion-extension/src/matrix.ts (vsix 2.0.4) and then CHANGED:
-// the extension's binary present/absent cell is replaced by a three-state cell
-// (absent / partial / complete). See the copy-provenance note in parser.ts for
-// why the two trees stay independent.
-//
 // Reconstruct the Construction per-unit progress matrix. The (unit × stage)
 // progress is not carried by any single file:
 //
@@ -17,8 +12,8 @@
 // So the matrix is `bolt_dag` (structure) × disk (completion) × stage-graph.json
 // (the artifact contract that says when a unit's segment is actually DONE).
 //
-// WHY THREE STATES. The extension calls a cell present when the segment dir is
-// non-empty. That over-reports: a unit stopped at its plan-approval question has
+// WHY THREE STATES. The obvious rule — a cell is present when the segment dir is
+// non-empty — over-reports: a unit stopped at its plan-approval question has
 // `code-generation-plan.md` + `code-generation-questions.md` on disk but no
 // `code-summary.md`, and reads as fully present — which hides the very unit the
 // run is blocked on. Intersecting the dir listing with the stage's contracted
@@ -26,8 +21,8 @@
 // what is missing. Verified on a 9-unit run: 30 of 31 populated cells matched
 // the contract exactly and the single mismatch was the real blocker.
 //
-// Degradation: no stage catalogue (older harness, partial sync) → fall back to
-// the extension's binary rule, with `expected` empty and state never "partial".
+// Degradation: no stage catalogue (older harness, partial sync) → fall back to the
+// binary present/absent rule, with `expected` empty and state never "partial".
 //
 // Node fs only (local FS) — no vscode import — so it stays unit-testable headless
 // the way parser.ts / resolve.ts are.
@@ -225,7 +220,7 @@ export function buildConstructionMatrix(
       const present = readUnitSegment(u.name, st.slug);
       const expected = catStage ? expectedArtifacts(catStage, u.kind) : [];
       const missing = expected.filter((a) => !present.includes(a));
-      // No contract to check against → the extension's binary rule.
+      // No contract to check against → the binary present/absent rule.
       const state: CellState =
         present.length === 0 ? "absent" : missing.length === 0 ? "complete" : "partial";
       return { unit: u.name, state, present, expected, missing };
