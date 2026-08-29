@@ -128,11 +128,6 @@ bun run src/server.ts --root ~/path/to/ws    # 바로 그 워크스페이스로 
 
 ---
 
-개발·설계 문서는 [`CLAUDE.md`](CLAUDE.md) 에 있다 — 아키텍처와 불변식, 이 코드가 우회하려고
-존재하는 **AI-DLC 트리의 실측 데이터 계약과 함정**, 개발 명령, 스타일·테스트 규약.
-
----
-
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
