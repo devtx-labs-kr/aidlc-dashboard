@@ -84,6 +84,10 @@ describe("assemble on the fixture workspace", () => {
     // library gets business-rules, ui gets frontend-components — both complete.
     expect(fd.complete).toBe(2);
     expect(fd.partial).toBe(0);
+    // Both cells also contract `traceability`, which the engine writes as
+    // `traceability.json` — so this only passes while the segment scan strips
+    // whatever extension is there. An `.md`-only filter puts both at "partial".
+    expect(fd.cells.every((c) => c.present.includes("traceability"))).toBe(true);
   });
 
   test("skipped stage keeps a row with no cells", () => {
@@ -154,14 +158,19 @@ describe("assemble on the fixture workspace", () => {
     expect(m.health.stopGuard).toEqual({ signature: "code-generation::19", count: 1 });
   });
 
-  test("treats the 2-shard fixture as parallel and reports both time axes", () => {
-    // The fixture has a main shard plus a short second-clone shard.
-    expect(m.timing.parallel).toBe(true);
+  test("treats the 2-shard fixture as a handover, not parallel development", () => {
+    // The fixture has a main shard plus a short second-clone shard, and their windows
+    // do not overlap — which is what a real multi-developer run looked like too.
+    expect(m.timing.parallel).toBe(true); // more than one shard, structurally
     expect(m.timing.workers.length).toBe(2);
+    expect(m.timing.clones).toBe(2);
     // Person-time is the sum of the shards' own spans, so it differs from the
     // team wall-clock whenever the shards do not cover the same window.
     expect(m.timing.personElapsedSec).not.toBe(m.timing.elapsedSec);
-    expect(m.timing.parallelism).toBeDefined();
+    // No overlap → the concurrency ratio is withheld rather than shown as ~1.
+    expect(m.timing.overlapSec).toBe(0);
+    expect(m.timing.parallelism).toBeUndefined();
+    expect(m.timing.handoverSec).toBeGreaterThan(0);
     // Only the busier shard drove gates.
     expect(m.timing.workers[0]?.gatesApproved).toBe(2);
     expect(m.timing.workers[1]?.gatesApproved).toBe(0);
@@ -308,7 +317,10 @@ describe("render", () => {
   test("shows the per-worker table and explains the merged/per-worker split", () => {
     const body = renderBody(m);
     expect(body).toContain("작업자별 분해");
-    expect(body).toContain("실효 병렬도");
+    // The fixture's shards do not overlap, so the panel must say handover rather
+    // than claim parallel development, and must NOT print a concurrency ratio.
+    expect(body).toContain("순차 인계");
+    expect(body).not.toContain("실효 병렬도");
     expect(body).toContain("팀 벽시계"); // merged KPI relabelled
     expect(body).toContain("팀 단위"); // merged row is labelled as team-wide
     expect(body).toContain("사용자 대기");
@@ -706,6 +718,46 @@ describe("manual reload", () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("a runtime-skipped stage ([S]) leaves the denominator like a scope SKIP does", () => {
+    // Measured on a real run: `[S] market-research — EXECUTE` stayed in the
+    // denominator forever, so overall read 80% and the Ideation phase read 86%
+    // while state.md declared that phase Verified. A run that skips a stage at
+    // runtime could never reach 100%.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aidlc-sskip-"));
+    try {
+      fs.cpSync(path.join(FIXTURE, "aidlc"), path.join(dir, "aidlc"), { recursive: true });
+      fs.cpSync(path.join(FIXTURE, ".kiro"), path.join(dir, ".kiro"), { recursive: true });
+      const statePath = path.join(
+        dir,
+        "aidlc/spaces/default/intents/260101-demo-migration/aidlc-state.md",
+      );
+      const before = assemble(dir);
+      expect(before.state.overallTotal).toBe(5);
+
+      // The fixture's only outstanding stage is `[-] code-generation` (in flight).
+      // Turn it into a runtime skip: it must leave the denominator, which is what
+      // lets a run whose remaining stages were all skipped read as complete.
+      fs.writeFileSync(
+        statePath,
+        fs
+          .readFileSync(statePath, "utf-8")
+          .replace("- [-] code-generation — EXECUTE", "- [S] code-generation — EXECUTE"),
+      );
+      const after = assemble(dir);
+      expect(after.state.overallTotal).toBe(4); // denominator shrank
+      expect(after.state.overallDone).toBe(4); // numerator unchanged
+      expect(after.state.overallPct).toBe(100);
+      const construction = after.state.phases.find((p) => p.key === "construction")!;
+      expect(construction.stages.find((s) => s.slug === "code-generation")?.status).toBe("skipped");
+      // Construction keeps functional-design; the scope-SKIP and the runtime-skip
+      // both drop out, so the phase reads 1/1 instead of 1/2.
+      expect(construction.total).toBe(1);
+      expect(construction.pct).toBe(100);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 // The artifact listing + the open endpoint's path jail. The jail is the reason
@@ -727,7 +779,7 @@ describe("stage artifacts", () => {
     return { root, record };
   }
 
-  test("lists md + html, classifies kinds, and orders deliverables first", () => {
+  test("lists md + html + json, classifies kinds, and orders deliverables first", () => {
     const { root, record } = stageTree();
     try {
       // html is a real deliverable (the visual-mockups plugin's HTML path), so a
@@ -736,15 +788,20 @@ describe("stage artifacts", () => {
         path.join(record, "ideation", "intent-capture", "a-mockup.html"),
         "<html></html>",
       );
+      // So is json: `traceability` is contracted by 8 stages and always written as
+      // `traceability.json`, so an md+html filter hid a contract deliverable.
+      fs.writeFileSync(path.join(record, "ideation", "intent-capture", "traceability.json"), "{}");
       const got = listStageArtifacts(record, "ideation", "intent-capture");
       expect(got.map((a) => a.name)).toEqual([
         "a-mockup.html",
         "intent-statement.md",
         "stakeholder-map.md",
+        "traceability.json",
         "intent-capture-questions.md",
         "memory.md",
       ]);
       expect(got.map((a) => a.kind)).toEqual([
+        "artifact",
         "artifact",
         "artifact",
         "artifact",

@@ -22,6 +22,7 @@ import type { ConstructionMatrix } from "../scan/matrix";
 import type { DiaryReport } from "../scan/memory-diary";
 import type { AidlcState } from "../scan/parser";
 import type { QuestionsReport } from "../scan/questions";
+import type { ReworkReport } from "../scan/rework";
 import type { SensorReport } from "../scan/sensors";
 import type { TimingReport } from "../scan/timing";
 
@@ -146,6 +147,12 @@ export interface DashboardModel {
   timing: TimingReport;
   blockers: Blocker[];
   gates: GateSummary;
+  /**
+   * How much of the run was done over again. Separate from `gates`, which only
+   * counts the events: this pairs each rejection with the approval that closed it
+   * and carries the human reasons.
+   */
+  rework: ReworkReport;
   /**
    * Usage view for the top-of-page panel. Always present — a run with no usage
    * data degrades to an empty view of the resolved kind rather than an absent

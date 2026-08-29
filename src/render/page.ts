@@ -178,6 +178,7 @@ table.mx tbody th { text-align:left; white-space:nowrap; font-weight:500; }
   font-size:var(--fs-1); cursor:help; }
 .mx-cell { font-size:var(--fs-4); line-height:1; cursor:help; }
 .c-complete { color:var(--ok); } .c-partial { color:var(--warn); } .c-absent { color:var(--line); }
+.c-na { color:var(--muted); }
 .mx-n { color:var(--mute); font-variant-numeric:tabular-nums; padding-left:9px !important; }
 tr.mx-skip { opacity:.4; } tr.mx-skip td { font-size:var(--fs-1); color:var(--mute); }
 .prov-mark { color:var(--warn); margin-left:3px; cursor:help; }
@@ -286,10 +287,36 @@ details summary { cursor:pointer; font-size:var(--fs-2); color:var(--mute); marg
 .g-track-h { width:44%; }
 .g-track { width:44%; padding:4px 6px !important; }
 .g-track-line { position:relative; height:11px; min-width:260px; }
-.g-bar { position:absolute; top:0; height:11px; border-radius:var(--r-pill); background:var(--accent);
-  min-width:2px; cursor:help; }
-.g-bar.done { background:var(--accent2); } .g-bar.skip { background:var(--mute); opacity:.55; }
-.g-bar.await { background:var(--warn); } .g-bar.live { background:var(--accent); }
+/* Bar LENGTH is calendar occupancy; the FILL is that stretch's split, so a long bar
+   made of waiting cannot look like a long bar of work. End kind is the outline. */
+.g-bar { position:absolute; top:0; height:11px; border-radius:var(--r-pill); background:var(--line);
+  min-width:2px; cursor:help; display:flex; overflow:hidden;
+  box-shadow:0 0 0 1px var(--mute) inset; }
+.g-bar > i { display:block; height:100%; min-width:1px; }
+.g-bar > i.wait { background:var(--warn); } .g-bar > i.parked { background:var(--accent); }
+.g-bar > i.observed { background:var(--ok); } .g-bar > i.unknown { background:var(--mute); }
+.g-bar.k-done { box-shadow:0 0 0 1px var(--accent2) inset; }
+.g-bar.k-skip { box-shadow:0 0 0 1px var(--mute) inset; opacity:.55; }
+.g-bar.k-await { box-shadow:0 0 0 1px var(--warn) inset; }
+.g-bar.k-live { box-shadow:0 0 0 1px var(--accent) inset; }
+/* A superseded attempt is over: dashed outline, dimmed, never the "running" colour. */
+.g-bar.k-sup { box-shadow:none; outline:1px dashed var(--mute); outline-offset:-1px; opacity:.6; }
+/* Track axis: dates under the header, plus the unrecorded tail as a shaded band. */
+.g-axis { position:relative; height:14px; min-width:260px; margin-top:3px; font-weight:400; }
+.ax-t { position:absolute; top:0; transform:translateX(-50%); color:var(--mute);
+  font-size:var(--fs-1); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.ax-t:first-of-type { transform:none; } .ax-t:last-of-type { transform:translateX(-100%); }
+.ax-gap { position:absolute; top:0; height:14px; background:repeating-linear-gradient(45deg,
+  var(--line) 0 3px, transparent 3px 6px); cursor:help; }
+/* A 0-second stage: a tick at its instant, never a bar wide enough to read as time. */
+.g-tick { position:absolute; top:-1px; width:2px; height:13px; background:var(--mute); cursor:help; }
+.g-tick.k-done { background:var(--accent2); } .g-tick.k-live { background:var(--accent); }
+.g-tick.k-await { background:var(--warn); }
+.g-n.attn { color:var(--fg); }
+.g-where { color:var(--accent); font-size:var(--fs-1); }
+i.lg { display:inline-block; width:9px; height:9px; border-radius:2px; vertical-align:-1px; }
+i.lg.wait { background:var(--warn); } i.lg.parked { background:var(--accent); }
+i.lg.observed { background:var(--ok); } i.lg.unknown { background:var(--mute); }
 .g-load { color:var(--mute); font-size:var(--fs-1); max-width:150px; overflow:hidden;
   text-overflow:ellipsis; white-space:nowrap; }
 .tag-lead { font-size:var(--fs-1); color:var(--accent); border:1px solid currentColor;

@@ -18,14 +18,24 @@
 // one run: 58 of 79 minutes). So each gap between consecutive events is sorted:
 //
 //   HUMAN  a gate-opening event followed by HUMAN_TURN.
-//   PARKED WORKFLOW_PARKED → WORKFLOW_UNPARKED, plus an inferred session break
-//          when an old ledger has no balanced park pair.
-//   ACTIVE event-dense time (<5 minutes) and explicit delegated work.
+//   PARKED every clone PRESENT at that moment is between WORKFLOW_PARKED and
+//          WORKFLOW_UNPARKED, plus an inferred session break when an old ledger has
+//          no balanced park pair.
+//   ACTIVE event-dense time (<5 minutes) and delegation windows.
 //   UNKNOWN a 5-minute+ gap with no trustworthy semantic marker.
 //
 // ACTIVE is deliberately called "observed", not "actual execution": the ledger
 // records event boundaries, not CPU/model activity. UNKNOWN stays separate
 // instead of being presented as execution.
+//
+// READ THIS BEFORE TUNING THE TWO CONSTANTS BELOW. `observedSec + unknownSec` is
+// invariant under `SUSPECT_SEC` to three decimals — measured 55.689h across the
+// whole sweep 60s…∞ on one run. So the pair is one real quantity ("time no marker
+// explains") cut at an arbitrary point, and moving the cut moves UNKNOWN between
+// 38% and 0% of the wall clock without learning anything. Likewise `IDLE_FLOOR_SEC`
+// only trades humanWait against observed. Neither constant can create information;
+// what does is a rule that reads a marker the ledger actually carries — which is why
+// the park and delegation rules were widened instead.
 
 import type { AuditEvent, AuditLedger } from "./audit";
 
@@ -103,7 +113,21 @@ export interface GapSplit {
 }
 
 /** How a stage's span was closed. */
-export type StageEndKind = "completed" | "skipped" | "awaiting-approval" | "in-flight";
+/**
+ * How a stage segment ended. `superseded` exists because a re-entry is not a state:
+ * when `STAGE_STARTED` arrives for a stage that is already open, the earlier segment
+ * is over and was replaced. Calling it `in-flight` (which it was, before this) left
+ * blue "진행중" bars sitting five days in the past on a real run — two of them — while
+ * the legend told the reader blue meant running now. Calling it `awaiting-approval`
+ * would be no better: the submission it refers to was rejected, and the rework block
+ * is where that belongs.
+ */
+export type StageEndKind =
+  | "completed"
+  | "skipped"
+  | "awaiting-approval"
+  | "in-flight"
+  | "superseded";
 
 export interface StageSegment extends GapSplit {
   startedAt: string;
@@ -136,14 +160,32 @@ export interface StageSpan extends GapSplit {
  * 4-developer run: merged idle 818.7 min vs per-shard idle 2,631.5 min, so the
  * merged view loses 69% of the waiting.
  *
+ * That mechanism needs OVERLAPPING clones, and it is worth knowing how rare that
+ * is. On a 3-shard run whose windows overlap by 0.00h, only 2 of 4,629 adjacent
+ * pairs crossed shards and `humanWaitSec` came out identical in both views — the
+ * merged/per-shard delta there was not interleaving at all but the park bug (see
+ * `presentAt` in classifyGaps). After that fix the merged figure is the LARGER one,
+ * by the handover gaps: they stop the team but belong to no individual.
+ *
  * So gaps are ALSO classified per shard, and that is the number to trust for
- * "how long did people actually wait".
+ * "how long did people actually wait" — while merged answers "how long was the team
+ * not moving". Neither is a correction of the other.
  */
 export interface WorkerSpan {
   /** Shard basename, e.g. "jiho-kim-c02dw4rrmd6r-0c1b20ca004a.md". */
   shard: string;
   /** Human-ish label: the shard name minus the host/clone-id suffix. */
   label: string;
+  /**
+   * The 12-hex clone id the shard name ends with. Two shards can share it — measured
+   * on a real run, `lottes-macbook-pro-local-74726ff984d7` and
+   * `80a997205078-74726ff984d7` are the SAME working copy reached under two host
+   * identities. `label` throws the id away, so without this the panel counted 3
+   * clones (and called them "parallel development") where there were 2 developers.
+   */
+  cloneId?: string;
+  /** True when the shard's last park marker was never closed — it left parked. */
+  endedParked: boolean;
   events: number;
   firstTs: string;
   lastTs: string;
@@ -178,15 +220,58 @@ export interface TimingReport {
    */
   total: GapSplit;
   firstTs?: string;
+  /**
+   * End of the analysed window. For a run with a `WORKFLOW_COMPLETED` this is the
+   * last event; for one still open it is the read clock, NOT the last event — see
+   * `lastEventTs`.
+   */
   lastTs?: string;
+  /**
+   * Timestamp of the last real event. Distinct from `lastTs` on purpose: an open
+   * run's window ends now, so `lastTs` advances on every refresh while nothing
+   * happens. A tree copied out of a run mid-flight (or one simply parked) shows
+   * exactly that, and reporting only `lastTs` would put a moving date on a record
+   * whose last activity is fixed.
+   */
+  lastEventTs?: string;
+  /**
+   * `lastTs − lastEventTs`: the stretch with no audit record at all. It is inside
+   * `elapsedSec` and outside every `GapSplit` bucket, so `total` + this = the window.
+   *
+   * That was NOT true when this field was introduced, and the bug is worth keeping
+   * on the record: a synthetic `ANALYSIS_NOW` event extended the list handed to
+   * `classifyGaps`, so the silence was charged to a bucket second for second —
+   * `unknownSec` measured 41.15h at the read and 473.15h eighteen days later, on a
+   * ledger that had not changed. The comment here claimed the opposite, and the test
+   * that was supposed to protect it passed because its fixture had a single shard,
+   * which sent the trailing gap to `parkedSec` instead of the `unknownSec` it
+   * asserted on. Classification now runs on real events only.
+   */
+  sinceLastEventSec: number;
   /** Team wall-clock: first → last event across every shard. */
   elapsedSec: number;
   /** Stage awaiting approval right now, per the ledger. */
   awaitingStage?: string;
   /** Per-shard timelines, busiest first. One entry for a single-clone run. */
   workers: WorkerSpan[];
-  /** True when more than one shard carries events — a parallel run. */
+  /** True when more than one shard carries events. Says nothing about concurrency. */
   parallel: boolean;
+  /**
+   * Distinct clone ids among the shards — the count of working copies, which is the
+   * closest thing the ledger has to "how many developers". Can be lower than
+   * `workers.length` (see `WorkerSpan.cloneId`).
+   */
+  clones: number;
+  /**
+   * Σ pairwise overlap of the worker windows. **0 means the clones never worked at
+   * the same time** — the run was a sequential handover, not parallel development.
+   * Measured on a real 3-shard run: all three pairwise overlaps were 0.00h, while
+   * the panel called it 병렬 개발 and reported `parallelism` 0.985 as if the clones
+   * had been near-perfectly concurrent.
+   */
+  overlapSec: number;
+  /** Wall-clock inside the window that no shard covers — the handover gaps. */
+  handoverSec: number;
   /** Σ per-worker idle. The trustworthy waiting figure. */
   personIdleSec: number;
   /** Σ per-worker work. */
@@ -198,9 +283,12 @@ export interface TimingReport {
   /** Σ per-worker elapsed — person-time, not wall-clock. */
   personElapsedSec: number;
   /**
-   * personElapsedSec / elapsedSec: how many developers were effectively active at
-   * once. 1.0 = fully sequential; 4 shards at 1.5 means the four overlapped far
-   * less than their count suggests. Undefined when wall-clock is 0.
+   * personElapsedSec / elapsedSec. Reported ONLY when `overlapSec > 0`, because
+   * without overlap it measures nothing about concurrency: with non-overlapping
+   * windows it reduces to `1 − handoverSec / elapsedSec`, i.e. how much of the
+   * window the shards happen to tile. Measured on a run with zero overlap it read
+   * 0.985 — and fell to 0.228 when the same unchanged ledger was read 18 days later,
+   * because only the denominator follows the clock.
    */
   parallelism?: number;
 }
@@ -221,9 +309,55 @@ export function classifyGaps(events: AuditEvent[]): GapSplit {
   let unknownSec = 0;
   let delegatedSec = 0;
   let parkAnomalies = 0;
-  const shards = new Set(events.map((event) => event.shard));
   const parkedShards = new Set<string>();
   const unknown: SuspectSpan[] = [];
+
+  // WHICH SHARDS ARE PRESENT AT A GIVEN GAP. A shard's own window spans the gap
+  // when it has already written an event and has not yet written its last. A shard
+  // that has not started, or has already gone quiet, is ABSENT — not working.
+  //
+  // Treating absent as working is what broke the park rule. Comparing against the
+  // whole ledger's shard set made "every clone is parked" unreachable on a
+  // sequential handover: measured on a real 3-shard run whose windows do not
+  // overlap at all, the all-parked branch fired for 0 gaps and claimed 0.00h, so
+  // the 80.31h the ledger explicitly marks as parked was discarded and the panel
+  // instead showed 67.05h inferred from 20 session markers. With presence, the
+  // explicit park is counted and a genuinely parallel run still needs every
+  // present clone parked before the team counts as stopped.
+  const firstIdx = new Map<string, number>();
+  const lastIdx = new Map<string, number>();
+  events.forEach((event, i) => {
+    if (!firstIdx.has(event.shard)) firstIdx.set(event.shard, i);
+    lastIdx.set(event.shard, i);
+  });
+  const presentAt = (i: number): string[] => {
+    const out: string[] = [];
+    for (const [shard, first] of firstIdx) {
+      if (first <= i && (lastIdx.get(shard) ?? -1) >= i + 1) out.push(shard);
+    }
+    return out;
+  };
+
+  // DELEGATION IS A WINDOW, NOT AN ADJACENT PAIR. `REVIEW_REQUESTED` is followed by
+  // the artifacts the reviewer writes, so the close is several events later:
+  // measured, 52 of 61 delegation gaps closed on `ARTIFACT_UPDATED`, leaving the
+  // adjacency test to recognise 0.31h of a real 14.4h and dumping the rest into
+  // UNKNOWN. Pair each open with the next close IN THE SAME SHARD and mark the
+  // gaps in between. An unclosed open is never marked, so a dangling
+  // `REVIEW_REQUESTED` cannot swallow the rest of the run.
+  const delegatedGaps = new Set<number>();
+  const openDelegation = new Map<string, number>();
+  events.forEach((event, i) => {
+    if (AGENT_OPEN.has(event.event)) {
+      if (!openDelegation.has(event.shard)) openDelegation.set(event.shard, i);
+    } else if (AGENT_CLOSE.has(event.event)) {
+      const from = openDelegation.get(event.shard);
+      if (from !== undefined) {
+        for (let g = from; g < i; g++) delegatedGaps.add(g);
+        openDelegation.delete(event.shard);
+      }
+    }
+  });
 
   for (let i = 0; i < events.length - 1; i++) {
     const a = events[i]!;
@@ -239,8 +373,11 @@ export function classifyGaps(events: AuditEvent[]): GapSplit {
       parkedShards.delete(a.shard);
     }
 
-    // In a merged ledger, one parked clone does not mean the team stopped.
-    if (parkedShards.size > 0 && parkedShards.size === shards.size) {
+    // One parked clone does not mean the team stopped — but every PRESENT clone
+    // being parked does.
+    const present = presentAt(i);
+    const parkedPresent = present.filter((shard) => parkedShards.has(shard));
+    if (present.length > 0 && parkedPresent.length === present.length) {
       parkedSec += gap;
     } else if (GATE_OPEN.has(a.event) && b.event === "HUMAN_TURN" && gap >= IDLE_FLOOR_SEC) {
       humanWaitSec += gap;
@@ -249,7 +386,7 @@ export function classifyGaps(events: AuditEvent[]): GapSplit {
       // conservative fallback visible as inferred pause time.
       parkedSec += gap;
       inferredParkSec += gap;
-    } else if (AGENT_OPEN.has(a.event) && AGENT_CLOSE.has(b.event)) {
+    } else if (delegatedGaps.has(i)) {
       delegatedSec += gap;
       observedSec += gap;
     } else if (gap >= SUSPECT_SEC) {
@@ -327,17 +464,22 @@ export function buildWorkers(events: AuditEvent[]): WorkerSpan[] {
     const units = new Map<string, number>();
     let gatesApproved = 0;
     let stagesCompleted = 0;
+    let endedParked = false;
     for (const e of evs) {
       if (e.stage) stages.set(e.stage, (stages.get(e.stage) ?? 0) + 1);
       if (e.unit) units.set(e.unit, (units.get(e.unit) ?? 0) + 1);
       if (e.event === "GATE_APPROVED") gatesApproved++;
       else if (e.event === "STAGE_COMPLETED") stagesCompleted++;
+      else if (e.event === "WORKFLOW_PARKED") endedParked = true;
+      else if (e.event === "WORKFLOW_UNPARKED") endedParked = false;
     }
     const firstTs = evs[0]!.ts;
     const lastTs = evs[evs.length - 1]!.ts;
     out.push({
       shard,
       label: shardLabel(shard),
+      cloneId: /-([0-9a-f]{12})\.md$/.exec(shard)?.[1],
+      endedParked,
       events: evs.length,
       firstTs,
       lastTs,
@@ -373,9 +515,13 @@ export function buildTiming(ledger: AuditLedger, nowTs?: string): TimingReport {
     return {
       stages: [],
       total: classifyGaps([]),
+      sinceLastEventSec: 0,
       elapsedSec: 0,
       workers: [],
       parallel: false,
+      clones: 0,
+      overlapSec: 0,
+      handoverSec: 0,
       personIdleSec: 0,
       personWorkSec: 0,
       personHumanWaitSec: 0,
@@ -394,19 +540,14 @@ export function buildTiming(ledger: AuditLedger, nowTs?: string): TimingReport {
   const firstTs = actual[0]!.ts;
   const lastActualTs = actual[actual.length - 1]!.ts;
   const requestedEnd = completedIndex >= 0 ? lastActualTs : (nowTs ?? lastActualTs);
+  // The WINDOW may end at the read clock, but nothing is CLASSIFIED past the last
+  // event. A synthetic `ANALYSIS_NOW` event used to be appended here and handed to
+  // `classifyGaps`, which charged the silence since the last event to a bucket at
+  // one second per second — measured, `unknownSec` grew from 41.15h to 473.15h over
+  // 18 days of not reading, and the synthetic event name leaked into the on-screen
+  // suspect list as `HUMAN_TURN → ANALYSIS_NOW`. Every classification below now runs
+  // on `actual`, and the trailing silence is reported once, as `sinceLastEventSec`.
   const endTs = Date.parse(requestedEnd) >= Date.parse(lastActualTs) ? requestedEnd : lastActualTs;
-  const events =
-    endTs === lastActualTs
-      ? actual
-      : [
-          ...actual,
-          {
-            ts: endTs,
-            event: "ANALYSIS_NOW",
-            fields: {},
-            shard: actual[actual.length - 1]!.shard,
-          },
-        ];
 
   interface OpenStage {
     startedAt: string;
@@ -440,9 +581,10 @@ export function buildTiming(ledger: AuditLedger, nowTs?: string): TimingReport {
     if (!order.includes(stage)) order.push(stage);
 
     if (e.event === "STAGE_STARTED") {
-      // A repeated start is a real re-entry. Close a malformed still-open entry
-      // at the new boundary rather than stretching one bar across unrelated work.
-      close(stage, e.ts, open.get(stage)?.awaiting ? "awaiting-approval" : "in-flight");
+      // A repeated start is a real re-entry. Close the still-open entry at the new
+      // boundary rather than stretching one bar across unrelated work — and mark it
+      // superseded, because whatever state it was in, it is over.
+      close(stage, e.ts, "superseded");
       open.set(stage, { startedAt: e.ts, awaiting: false });
       if (awaitingStage === stage) awaitingStage = undefined;
     } else if (e.event === "STAGE_COMPLETED") {
@@ -459,7 +601,10 @@ export function buildTiming(ledger: AuditLedger, nowTs?: string): TimingReport {
   }
 
   for (const [stage, current] of open) {
-    close(stage, endTs, current.awaiting ? "awaiting-approval" : "in-flight");
+    // An unfinished stage ends at its last event, NOT at the read clock: otherwise its
+    // bar and elapsed grow every poll while nothing happens (and the growth used to
+    // land in its `unknownSec`, measured 7,620s → 94,020s over 24h of not reading).
+    close(stage, lastActualTs, current.awaiting ? "awaiting-approval" : "in-flight");
   }
 
   const stages: StageSpan[] = [];
@@ -469,7 +614,7 @@ export function buildTiming(ledger: AuditLedger, nowTs?: string): TimingReport {
     if (!stageSegments?.length) continue;
 
     const segments: StageSegment[] = stageSegments.map((segment) => {
-      const within = events.filter((e) => e.ts >= segment.startedAt && e.ts <= segment.endedAt);
+      const within = actual.filter((e) => e.ts >= segment.startedAt && e.ts <= segment.endedAt);
       const split = classifyGaps(within);
       return {
         ...segment,
@@ -530,15 +675,48 @@ export function buildTiming(ledger: AuditLedger, nowTs?: string): TimingReport {
   const elapsedSec = secs(firstTs, endTs);
   const personElapsedSec = workers.reduce((n, w) => n + w.elapsedSec, 0);
 
+  // Did the clones ever work at the same time? Σ pairwise overlap answers it from
+  // the windows alone; the union answers how much of the run any clone covered, and
+  // what is left over is handover.
+  let overlapSec = 0;
+  for (let i = 0; i < workers.length; i++) {
+    for (let j = i + 1; j < workers.length; j++) {
+      const a = workers[i]!;
+      const b = workers[j]!;
+      const from = Math.max(Date.parse(a.firstTs), Date.parse(b.firstTs));
+      const to = Math.min(Date.parse(a.lastTs), Date.parse(b.lastTs));
+      if (to > from) overlapSec += (to - from) / 1000;
+    }
+  }
+  const spans = workers
+    .map((w) => ({ from: Date.parse(w.firstTs), to: Date.parse(w.lastTs) }))
+    .sort((a, b) => a.from - b.from);
+  let coveredSec = 0;
+  let cursor = Number.NEGATIVE_INFINITY;
+  for (const s of spans) {
+    const from = Math.max(s.from, cursor);
+    if (s.to > from) {
+      coveredSec += (s.to - from) / 1000;
+      cursor = s.to;
+    }
+  }
+  const lastEventSpanSec = secs(firstTs, lastActualTs);
+  const handoverSec = Math.max(0, lastEventSpanSec - coveredSec);
+
   return {
     stages,
-    total: classifyGaps(events),
+    total: classifyGaps(actual),
     firstTs,
     lastTs: endTs,
+    lastEventTs: lastActualTs,
+    sinceLastEventSec: Math.max(0, secs(lastActualTs, endTs)),
     elapsedSec,
     awaitingStage,
     workers,
     parallel: workers.length > 1,
+    clones: new Set(workers.map((w) => w.cloneId ?? w.shard)).size,
+    overlapSec,
+    handoverSec,
     personIdleSec: workers.reduce((n, w) => n + w.idleSec, 0),
     personWorkSec: workers.reduce((n, w) => n + w.workSec, 0),
     personHumanWaitSec: workers.reduce((n, w) => n + w.humanWaitSec, 0),
@@ -546,6 +724,7 @@ export function buildTiming(ledger: AuditLedger, nowTs?: string): TimingReport {
     personObservedSec: workers.reduce((n, w) => n + w.observedSec, 0),
     personUnknownSec: workers.reduce((n, w) => n + w.unknownSec, 0),
     personElapsedSec,
-    parallelism: elapsedSec > 0 ? personElapsedSec / elapsedSec : undefined,
+    // Only meaningful when the clones actually overlap — see the field's doc.
+    parallelism: elapsedSec > 0 && overlapSec > 0 ? personElapsedSec / elapsedSec : undefined,
   };
 }

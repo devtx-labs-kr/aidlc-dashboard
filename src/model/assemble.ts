@@ -26,6 +26,7 @@ import { readDiaries } from "../scan/memory-diary";
 import { parseState } from "../scan/parser";
 import { readQuestions } from "../scan/questions";
 import { resolveState } from "../scan/resolve";
+import { buildRework } from "../scan/rework";
 import { readSensorReport } from "../scan/sensors";
 import { type StageCatalog, harnessDirsWithCatalog, readStageCatalog } from "../scan/stage-catalog";
 import { buildTiming } from "../scan/timing";
@@ -464,6 +465,7 @@ export function assemble(
     timing,
     blockers: buildBlockers(questions, state.currentStage, now),
     gates: buildGates(ledger, state.revisionCount, timing.awaitingStage),
+    rework: buildRework(ledger),
     usage,
     eventCounts: [...ledger.counts].sort((a, b) => b[1] - a[1]),
     recentEvents: recent,
