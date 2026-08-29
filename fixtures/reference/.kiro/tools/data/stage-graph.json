@@ -32,10 +32,11 @@
     "name": "Functional Design",
     "phase": "construction",
     "for_each": "unit-of-work",
-    "produces": ["business-logic-model", "business-rules"],
+    "produces": ["business-logic-model", "business-rules", "traceability"],
     "optional_produces": ["frontend-components"],
     "produces_kinds": {
       "business-rules": ["service", "spec", "library"],
+      "traceability": ["service", "spec", "ui", "library"],
       "frontend-components": ["ui"]
     },
     "consumes": [],

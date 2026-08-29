@@ -29,16 +29,18 @@ export type OpenResult =
   | { ok: false; reason: string; status: 400 | 403 | 404 | 500 };
 
 /** Extensions we are willing to hand to the OS — the artifact kinds a record
- *  actually holds: markdown, plus the html the visual-mockups plugin writes at
- *  the mockup stages. Keeping the set closed means the engine's bookkeeping
- *  files (`.last`, `.drops`, `.json`) and any stray binary can never be
+ *  actually holds: markdown, the html the visual-mockups plugin writes at the
+ *  mockup stages, and the json the engine writes for `traceability`, which 8
+ *  stages contract as a deliverable. Keeping the set closed means the engine's
+ *  bookkeeping files (`.last`, `.drops`) and any stray binary can never be
  *  launched. Must stay in sync with LISTED_EXT in scan/artifacts.ts: a file the
  *  page lists but this refuses would be a dead link.
  *
  *  ⚠️ html opens in the default BROWSER, which is the point for a mockup — but
  *  it also means the opened file can run its own scripts. That is acceptable
- *  only because the path is jailed to the record the user chose to view. */
-const ALLOWED_EXT = new Set([".md", ".html"]);
+ *  only because the path is jailed to the record the user chose to view. json is
+ *  inert by comparison — it opens in the user's text editor. */
+const ALLOWED_EXT = new Set([".md", ".html", ".json"]);
 
 /** Per-platform "open with the default application" command. */
 function opener(): { cmd: string; pre: string[] } | undefined {

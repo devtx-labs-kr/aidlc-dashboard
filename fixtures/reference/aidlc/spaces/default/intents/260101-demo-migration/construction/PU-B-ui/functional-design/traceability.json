@@ -1,0 +1,5 @@
+{
+  "unit": "PU-B-ui",
+  "stage": "functional-design",
+  "requirements": { "FR1": ["functional-spec.md#fr1"] }
+}

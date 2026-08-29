@@ -19,8 +19,18 @@
 // path writes `<stage>/…​.html` at rough-mockups / refined-mockups (observed:
 // `ideation/rough-mockups/rough-mockup.html`, `inception/refined-mockups/
 // mockup.html`), so a markdown-only filter silently hides the one artifact those
-// stages exist to produce. Everything else in a record is `.md`; the remaining
-// extensions are engine bookkeeping (`.last`, `.drops`, `.json`) and stay out.
+// stages exist to produce.
+//
+// ⭐ So is json, for the same reason. `traceability` is contracted by 8 stages of
+// the stage graph (user-stories, domain-design, units-generation and all five
+// per-unit Construction stages) and the engine writes it as `traceability.json` —
+// a contract deliverable, not bookkeeping. Measured on one real run: of the 13
+// `.json` files in the record, 10 are that artifact sitting in a stage dir, and
+// the other 3 (`runtime-graph.json`, `.aidlc-active-directive.json`,
+// `.aidlc-stop-hook/block-count.json`) live at the record root or under dot dirs,
+// which this one-deep stage listing never reaches. So allowing `.json` here adds
+// the deliverable without admitting the bookkeeping. The remaining extensions
+// (`.last`, `.drops`) are hook state and stay out.
 //
 // The matrix scan (scan/matrix.ts readSegment) filters questions out because it
 // judges contract completeness; this scan keeps them because it answers a
@@ -38,7 +48,7 @@ export type ArtifactKind = "artifact" | "questions" | "diary";
 /** Extensions the listing surfaces. Kept in sync with open-file.ts's own
  *  allowlist — that one guards the spawn, this one only decides what is shown,
  *  and a file listed but unopenable would be a dead link. */
-const LISTED_EXT = [".md", ".html"];
+const LISTED_EXT = [".md", ".html", ".json"];
 
 /** One file inside a stage directory. */
 export interface StageArtifact {

@@ -15,6 +15,25 @@
 // where one unit's `[Answer]:` was blank and stop.drops corroborated with three
 // "pending-question carve-out" lines.
 //
+// THE HEADING IS WRITTEN FOUR WAYS. Measured across one long real run (23
+// artifacts, 195 `##` headings): `Q1 —` 119, `[Q1]` 58, `[F1]` 13, `F1.` 5. The
+// bracket is optional, follow-ups use an `F` id, and either form can carry a
+// suffix (`Q1-a`, `Q6-b`). Matching only the bare `Q<n>` form found 119 of 194
+// asks — 39% of that run's questions were invisible, including a whole stage's
+// worth. So the id is matched with the bracket and suffix optional.
+//
+// TWO RULES KEEP THAT WIDENING FROM INVENTING QUESTIONS:
+//
+//   1. A heading is an ask only if its span holds an `[Answer]:` marker. The
+//      marker is how the engine asks, so a heading without one is prose — real
+//      example, `## [Q5] 후속 — 원문에서 확인한 것`, a narrative section reusing an
+//      answered question's id. Without this rule it reads as a blocker.
+//   2. The answer is the first NON-EMPTY marker in the span, not the first
+//      marker. A human answering under the engine's blank placeholder leaves
+//      `[Answer]:` followed by `[Answer]: C. …`; taking the first marker calls
+//      that question unanswered. Measured: of 194 spans exactly one holds two
+//      markers, and it is that shape — blank-then-filled, never filled-then-blank.
+//
 // WHERE WE LOOK. Questions live at two depths: `<phase>/<stage>/` for ordinary
 // stages and `construction/<unit>/<stage>/` for per-unit Construction stages, so
 // the scan walks both. Only the record tree is walked (never the whole project),
@@ -60,7 +79,15 @@ export interface QuestionsReport {
 /** The phase dirs a record can hold (mirrors PHASES in the engine's lib). */
 const PHASE_DIRS = ["initialization", "ideation", "inception", "construction", "operation"];
 
-const HEADING_RE = /^##\s+(Q\d+.*)$/;
+/** Any `## ` heading — always ends the previous span, whether or not it opens one. */
+const H2_RE = /^##\s/;
+/**
+ * A `## ` heading carrying a question id: `Q1`, `[Q1]`, `F1`, `[F1]`, with an
+ * optional `-a` suffix. The id must be followed by a delimiter or end of line, so
+ * a prose heading that merely starts with the letter (`## U1의 완료는 …`) is not an
+ * ask, and neither is one whose id is only mentioned mid-sentence.
+ */
+const QUESTION_HEADING_RE = /^##\s+\[?([QF]\d+(?:-[A-Za-z0-9]+)?)\]?(?:$|[\s.:\]])/;
 // The engine writes `[Answer]:` at line start; capture the remainder verbatim so
 // a multi-word answer with a trailing comment still reads as answered.
 const ANSWER_RE = /^\[Answer\]:[ \t]*(.*)$/;
@@ -69,29 +96,36 @@ const ANSWER_RE = /^\[Answer\]:[ \t]*(.*)$/;
  * Parse one questions artifact's text. Exported for tests: this is the whole
  * answered/unanswered contract, checkable from a string.
  *
- * A question is the span from its `## Q<n>` heading to the next heading; the
- * FIRST `[Answer]:` in that span is its answer. An `[Answer]:` appearing before
- * any heading is ignored (there is no question to attach it to).
+ * A span runs from a question-id heading to the next `## ` heading of any kind.
+ * It becomes a question only if it holds an `[Answer]:` marker, and its answer is
+ * the first non-empty marker in it — see the two rules in the header comment for
+ * the real-run shapes that forced both. An `[Answer]:` outside any span (before
+ * the first heading, or under a prose heading) is ignored.
  */
 export function parseQuestions(text: string): QuestionEntry[] {
-  const out: QuestionEntry[] = [];
-  let current: QuestionEntry | undefined;
+  const spans: { heading: string; markers: string[] }[] = [];
+  let current: { heading: string; markers: string[] } | undefined;
+
   for (const line of text.replace(/\r\n/g, "\n").split("\n")) {
-    const h = HEADING_RE.exec(line);
-    if (h) {
-      current = { heading: h[1]!.trim(), answer: "", answered: false };
-      out.push(current);
+    if (H2_RE.test(line)) {
+      current = QUESTION_HEADING_RE.test(line)
+        ? { heading: line.replace(/^##\s+/, "").trim(), markers: [] }
+        : undefined;
+      if (current) spans.push(current);
       continue;
     }
-    if (!current || current.answered) continue;
+    if (!current) continue;
     const a = ANSWER_RE.exec(line);
-    if (a) {
-      current.answer = (a[1] ?? "").trim();
-      // Blank after the colon == still waiting. This is the whole signal.
-      current.answered = current.answer.length > 0;
-    }
+    if (a) current.markers.push((a[1] ?? "").trim());
   }
-  return out;
+
+  return spans
+    .filter((s) => s.markers.length > 0)
+    .map((s) => {
+      // Blank after the colon == still waiting. This is the whole signal.
+      const answer = s.markers.find((m) => m.length > 0) ?? "";
+      return { heading: s.heading, answer, answered: answer.length > 0 };
+    });
 }
 
 function statMtime(p: string): string {

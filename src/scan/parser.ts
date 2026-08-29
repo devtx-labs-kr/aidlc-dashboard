@@ -380,7 +380,9 @@ function buildConstructionBolts(
 
   return roster.map((unit) => {
     const stages = byBolt.get(unit) ?? [];
-    const executable = stages.filter((s) => s.execute);
+    // Same denominator rule as the phase counts below: a skipped stage is not
+    // outstanding work, whether the skip came from scope (`— SKIP`) or runtime (`[S]`).
+    const executable = stages.filter((s) => s.execute && s.status !== "skipped");
     return {
       unit,
       display: displayFromSlug(unit),
@@ -454,7 +456,16 @@ export function parseState(text: string): AidlcState {
   for (const key of PHASE_ORDER) {
     const stages = stagesByPhase.get(key) ?? [];
     if (stages.length === 0 && !(key in declared)) continue; // phase absent
-    const executable = stages.filter((s) => s.execute);
+    // A skipped stage leaves the denominator however the skip was expressed. Two
+    // shapes mean it: `— SKIP` (scope-excluded, so `execute` is false) and the `[S]`
+    // checkbox (in scope, but the run skipped it — the audit carries a matching
+    // STAGE_SKIPPED). Only the first used to be excluded, so a run that skipped a
+    // stage at runtime could never reach 100%: measured on a real run, overall read
+    // 20/25 = 80% with `[S] market-research — EXECUTE` outstanding forever, while
+    // its own Ideation phase read 86% though state.md declared that phase Verified.
+    // Dropping both kinds gives 20/24 = 83% overall and Ideation 100%, which agrees
+    // with the engine's own verdict.
+    const executable = stages.filter((s) => s.execute && s.status !== "skipped");
     const total = executable.length;
     const done = executable.filter((s) => s.status === "done").length;
     const declaredStatus = declared[key] ?? "";

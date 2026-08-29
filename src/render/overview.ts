@@ -114,14 +114,18 @@ function phaseBlocks(state: AidlcState, artifacts: DashboardModel["artifacts"]):
 
 /** Cell glyph + tooltip. The tooltip is where `missing` earns its keep. */
 function cellHtml(state: CellState, missing: string[], present: string[]): string {
-  const glyph = state === "complete" ? "█" : state === "partial" ? "▨" : "·";
+  const glyph =
+    state === "complete" ? "█" : state === "partial" ? "▨" : state === "n/a" ? "–" : "·";
   const tip =
     state === "partial"
       ? `미완: ${missing.join(", ")}`
       : state === "complete"
         ? `완료: ${present.join(", ")}`
-        : "미착수";
-  return `<td class="mx-cell c-${state}" title="${esc(tip)}">${glyph}</td>`;
+        : state === "n/a"
+          ? `이 유닛 kind 에 계약된 산출물 없음${present.length ? ` (있는 파일: ${present.join(", ")})` : ""}`
+          : "미착수";
+  // `n/a` needs a class the CSS can target, and "/" is not usable in one.
+  return `<td class="mx-cell c-${state === "n/a" ? "na" : state}" title="${esc(tip)}">${glyph}</td>`;
 }
 
 function matrixTable(mx: ConstructionMatrix): string {
@@ -140,13 +144,21 @@ function matrixTable(mx: ConstructionMatrix): string {
         return `<tr class="mx-skip"><th>${esc(s.display)}</th><td colspan="${mx.units.length}">SKIP</td><td class="mx-n">—</td></tr>`;
       }
       const cells = s.cells.map((c) => cellHtml(c.state, c.missing, c.present)).join("");
-      const n = `${s.complete}${s.partial ? `+${s.partial}▨` : ""}/${s.total}`;
+      // The denominator counts only units the stage actually contracts something
+      // for; n/a units would otherwise read as outstanding work.
+      const applicable = s.total - s.notApplicable;
+      const n = `${s.complete}${s.partial ? `+${s.partial}▨` : ""}/${applicable}${
+        s.notApplicable ? ` (–${s.notApplicable})` : ""
+      }`;
       return `<tr><th>${esc(s.display)}${s.provisional ? '<span class="prov-mark" title="진행 중 — 수치는 계속 늘어남">~</span>' : ""}</th>${cells}<td class="mx-n">${esc(n)}</td></tr>`;
     })
     .join("");
 
+  const anyNa = mx.stages.some((s) => s.notApplicable > 0);
   const note = mx.contractAware
-    ? '<p class="note">█ 계약 충족 · ▨ 착수했으나 산출물 미완(칸에 마우스를 올리면 무엇이 빠졌는지 표시) · · 미착수</p>'
+    ? `<p class="note">█ 계약 충족 · ▨ 착수했으나 산출물 미완(칸에 마우스를 올리면 무엇이 빠졌는지 표시) · · 미착수${
+        anyNa ? " · – 이 유닛 kind 에 계약된 산출물 없음(계 열의 괄호는 그 수)" : ""
+      }</p>`
     : '<p class="note warn">stage-graph.json 부재로 계약 판정 불가 — 칸은 파일 유무만 뜻함</p>';
 
   const batches = mx.batches.length

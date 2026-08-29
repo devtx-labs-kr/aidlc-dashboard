@@ -6,8 +6,30 @@
 //     SENSOR_PASSED / SENSOR_FAILED / SENSOR_BUDGET_OVERRIDE correlated by
 //     `Fire id`) but no finding bodies;
 //   - `.aidlc-sensors/<stage>/<sensorId>-<fireId>.md` has the finding bodies but
-//     ONLY for failures — a passing fire writes no file (verified: 46 detail
-//     files, all `**Pass**: false`, matching 46 SENSOR_FAILED exactly).
+//     ONLY for failures — a passing fire writes no file (verified twice: 46 detail
+//     files all `**Pass**: false`, and 54 on a second run, likewise all false).
+//
+// THE FILE SET IS A SUBSET, NOT A MIRROR, AND THE REASON IS THE CLONE. The first
+// measurement had files and SENSOR_FAILED matching exactly (46 = 46), which reads
+// like an invariant. It is not: a two-developer run had **84 failures and 54
+// files**, and the split is exactly per shard —
+//
+//   seokwon-…-d645e6b4dc7e   30 failures →  0 detail files
+//   lottes-…-74726ff984d7    54 failures → 54 detail files (1:1)
+//
+// because `audit/` is the ONLY per-clone-sharded source in a record.
+// `.aidlc-sensors/`, `.aidlc-hooks-health/` and `.aidlc-stop-hook/` carry no clone
+// dimension in their paths, so a tree that holds several clones' audit shards holds
+// only ONE clone's sensor bodies — the other developer's findings never travelled.
+// (The boundary looks temporal because the two shards' windows are adjacent, which
+// is how an earlier reading of this same tree mistook it for the engine starting to
+// write findings mid-run. It is not: same sensor ids, different machine.)
+//
+// So file count is a floor on failures, never the count, and a failure without a
+// body means "recorded elsewhere", not "no findings". This is why `failures` walks
+// the audit and attaches a body only when one exists — counting files would have
+// under-reported by 36% — and why `failuresWithoutBody` is reported rather than
+// left as a silent absence.
 //
 // So counts come from audit and bodies from disk, joined on fire id. Note we do
 // NOT use runtime-graph.json's pre-aggregated `sensor_firings`: it is only
@@ -70,6 +92,13 @@ export interface SensorReport {
   totalFailed: number;
   /** Detail files found on disk that no audit failure claimed — a drift signal. */
   orphanDetailFiles: number;
+  /**
+   * Failures whose findings body is absent. Normal in a multi-clone record: the
+   * audit merges every clone's shard while `.aidlc-sensors/` holds only the local
+   * clone's files, so these findings exist — on another machine. Reported so the
+   * screen can say that instead of showing a failure with an empty body.
+   */
+  failuresWithoutBody: number;
 }
 
 interface DetailBody {
@@ -263,5 +292,6 @@ export function readSensorReport(recordDir: string, ledger: AuditLedger): Sensor
     totalPassed: stages.reduce((n, s) => n + s.passed, 0),
     totalFailed: stages.reduce((n, s) => n + s.failed, 0),
     orphanDetailFiles: [...bodies.keys()].filter((k) => !claimed.has(k)).length,
+    failuresWithoutBody: failures.filter((f) => f.detailFile === undefined).length,
   };
 }
