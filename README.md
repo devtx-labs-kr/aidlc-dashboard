@@ -133,6 +133,6 @@ bun run src/server.ts --root ~/path/to/ws    # 바로 그 워크스페이스로 
 
 ---
 
-## 라이선스
+## License
 
-MIT — [`LICENSE`](LICENSE) 참조.
+MIT — see [`LICENSE`](LICENSE).
