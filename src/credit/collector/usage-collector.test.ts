@@ -2,6 +2,11 @@
  * UsageCollector 테스트 — 주입 가능한 spawn으로 성공/타임아웃/비정상 종료/빈 출력/실행 오류/
  * 512KB 절단/argv 정확성/env allowlist를 격리 검증한다. 실제 kiro-cli를 절대 호출하지 않는다(NFR5).
  * aidlc-dashboard 네이티브 트리로 흡수한 포팅본.
+ *
+ * 맨 아래 `defaultSpawn` 블록만 실제 프로세스를 띄운다. 띄우는 대상은 **테스트를 돌리고 있는
+ * bun 자신**(`process.execPath`)이라 외부 CLI·네트워크·워크스페이스에 의존하지 않는다 —
+ * 네이티브 타임아웃이 실제로 무는지는 스텁으로는 검증할 수 없고, 여기서 회귀한 결함(SIGTERM을
+ * 무시하는 자식에서 영구 대기)이 정확히 이 경로에 있었다.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -12,6 +17,7 @@ import {
   USAGE_ARGV,
   buildMinimalEnv,
   collectUsage,
+  defaultSpawn,
 } from "./usage-collector";
 
 /** 고정 결과를 돌려주는 스텁 spawn 생성기. 호출 인자를 기록한다. */
@@ -160,5 +166,59 @@ describe("UsageCollector", () => {
     expect(passedEnv.XDG_CONFIG_HOME).toBe("/home/u/.config");
     expect(passedEnv.AWS_SECRET_ACCESS_KEY).toBeUndefined();
     expect(passedEnv.GITHUB_TOKEN).toBeUndefined();
+  });
+});
+
+describe("defaultSpawn(네이티브 타임아웃)", () => {
+  /** bun 자신을 인라인 스크립트로 띄운다. 절대 경로라 PATH도 필요 없다(env는 빈 집합). */
+  function bunScript(source: string): string[] {
+    return [process.execPath, "-e", source];
+  }
+
+  test("정상 종료면 stdout을 그대로 돌려주고 timedOut=false", async () => {
+    const outcome = await defaultSpawn(bunScript('process.stdout.write("Used: 1\\n");'), {
+      timeoutMs: 5_000,
+      env: {},
+    });
+    expect(outcome.timedOut).toBe(false);
+    expect(outcome.exitCode).toBe(0);
+    expect(outcome.stdout).toBe("Used: 1\n");
+  });
+
+  test("비정상 종료면 exitCode와 stderr를 보존한다", async () => {
+    const outcome = await defaultSpawn(
+      bunScript('process.stderr.write("not authenticated\\n"); process.exit(3);'),
+      { timeoutMs: 5_000, env: {} },
+    );
+    expect(outcome.timedOut).toBe(false);
+    expect(outcome.exitCode).toBe(3);
+    expect(outcome.stderr).toContain("not authenticated");
+  });
+
+  test("SIGTERM을 무시하는 자식도 시한 안에 종료되고 timedOut=true", async () => {
+    // 손으로 걸던 타임아웃은 SIGTERM만 보냈으므로 이 자식에서 영구 대기했다(회귀 방어).
+    const started = Date.now();
+    const outcome = await defaultSpawn(
+      bunScript('process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);'),
+      { timeoutMs: 300, env: {} },
+    );
+    expect(outcome.timedOut).toBe(true);
+    // 시그널 종료이므로 exitCode는 계약대로 null이다.
+    expect(outcome.exitCode).toBeNull();
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  test("collectUsage는 defaultSpawn의 타임아웃을 실패 사유로 승격한다", async () => {
+    const result = await collectUsage({
+      spawn: (_argv, opts) =>
+        defaultSpawn(bunScript('process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);'), {
+          ...opts,
+          timeoutMs: 300,
+        }),
+      timeoutMs: 300,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toContain("타임아웃");
   });
 });

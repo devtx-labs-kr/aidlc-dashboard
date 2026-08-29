@@ -7,9 +7,12 @@
 // showDirectoryPicker() File System Access API has the same problem: it yields a
 // handle scoped to the browser sandbox, not a path.
 //
-// SAFETY. The dashboard binds to localhost only (Bun.serve's default hostname),
-// so this listing is reachable only from this machine — it exposes no more than a
-// local shell already can. Even so, the listing is deliberately narrow: names,
+// SAFETY. The dashboard binds to loopback only, so this listing is reachable
+// only from this machine — it exposes no more than a local shell already can.
+// That bind is NOT a default to be relied on: `Bun.serve` defaults to `0.0.0.0`
+// (all interfaces), and the only thing narrowing it is the explicit
+// `hostname: HOST` in `server.ts`. Dropping that line exposes this listing to the
+// network, so it stays. Even so, the listing is deliberately narrow: names,
 // types and an "is this an AI-DLC workspace" flag, never file contents. Symlinks
 // are not followed into (a link to / would make the walk unbounded), and dotfiles
 // are hidden unless the caller asks, so the common case is a short list.

@@ -332,6 +332,35 @@ describe("credit subsystem lifecycle", () => {
     expect(stopped).toBe(1);
     expect(() => shutdownCredit(undefined)).not.toThrow();
   });
+
+  test("shutdownCredit closes the store so the WAL is folded back in, and tolerates its absence", () => {
+    let stopped = 0;
+    let closed = 0;
+    shutdownCredit({ stop: () => stopped++ }, () => {
+      closed++;
+    });
+    expect(stopped).toBe(1);
+    expect(closed).toBe(1);
+    // A degraded boot has neither field.
+    expect(() => shutdownCredit(undefined, undefined)).not.toThrow();
+  });
+
+  test("bootCredit exposes closeStore, which no-ops for a store that cannot be closed", () => {
+    // The injected stub store has no close(); shutdown must not care.
+    const sub = bootCredit({
+      createStore: () => ({
+        init: () => {},
+        append: () => {},
+        maxSequence: () => 0,
+        latest: () => null,
+        readAll: () => [],
+      }),
+      createPipeline: () => ({ init: () => {}, run: async () => ({}) as never }),
+      createScheduler: () => ({ start: () => {}, stop: () => {} }),
+    });
+    expect(sub.degraded).toBe(false);
+    expect(() => shutdownCredit(sub.scheduler, sub.closeStore)).not.toThrow();
+  });
 });
 
 // ── loopback binding + routing over real HTTP ────────────────────────────────

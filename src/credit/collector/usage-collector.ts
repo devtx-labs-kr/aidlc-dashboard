@@ -12,8 +12,16 @@
  *   방어적 파싱 폴백 경로로 넘긴다(BR1.3·BR1.4).
  * - `/usage` 원문을 영구 로그/파일로 기록하지 않는다(휘발성) — 이 모듈은 값을 반환만 하며
  *   어떤 파일에도 쓰지 않는다.
- * - stdout을 read한 뒤 **512KB 지점에서 절단**해 파서로 넘긴다(NFR1.4). Bun.spawn은 stdout
- *   바이트 상한 네이티브 옵션이 없으므로 stream read 후 절단으로 강제한다.
+ * - stdout을 read한 뒤 **512KB 지점에서 절단**해 파서로 넘긴다(NFR1.4).
+ *
+ * 타임아웃은 `Bun.spawn`의 네이티브 `timeout`·`killSignal`로 강제한다(직접 setTimeout으로
+ * `proc.kill()`을 부르던 구현을 대체). 손으로 걸던 쪽에는 두 결함이 있었다 — (1) SIGTERM을
+ * 무시하는 자식이 있으면 파이프가 닫히지 않아 시한과 무관하게 영구 대기했고, (2) 정상 종료와
+ * 타이머 발화가 겹치면 완전한 출력을 갖고도 타임아웃으로 분류될 수 있었다.
+ *
+ * 절단을 `maxBuffer`(상한 초과 시 Bun이 프로세스를 죽이는 네이티브 옵션)로 옮기지 않은 것은
+ * 의도적이다. `/usage` 패널은 출력 머리에 있어 **512KB 앞부분만으로도 파싱이 성립**하는데,
+ * 상한에서 죽이면 그 앞부분까지 실패로 떨어진다. 대신 상한 초과 출력은 절단해 파서로 넘긴다.
  *
  * 테스트 가능성: spawn 실행기를 주입 가능(SpawnFn)하게 하여 실제 CLI를 호출하지 않고
  * 성공/타임아웃/비정상 종료/빈 출력/실행 오류/512KB 절단을 격리 검증한다(NFR5).
@@ -85,8 +93,14 @@ function truncateBytes(s: string, maxBytes: number): string {
   return new TextDecoder("utf-8", { fatal: false }).decode(sliced);
 }
 
-/** 기본 spawn 구현 — Bun.spawn을 argv로 실행하고 타임아웃을 강제한다. */
-const defaultSpawn: SpawnFn = async (argv, { timeoutMs, env }) => {
+/**
+ * 프로세스가 죽은 뒤 파이프가 닫히기를 기다리는 유예. 자식이 죽어도 손자 프로세스가 stdout을
+ * 물고 있으면 읽기가 끝나지 않으므로, 그 경우를 시한 안에서 포기하기 위한 상한이다.
+ */
+const DRAIN_GRACE_MS = 2_000;
+
+/** 기본 spawn 구현 — Bun.spawn을 argv로 실행하고 네이티브 타임아웃을 건다. */
+export const defaultSpawn: SpawnFn = async (argv, { timeoutMs, env }) => {
   const [cmd, ...args] = argv;
   if (cmd === undefined) {
     return { exitCode: null, stdout: "", stderr: "빈 argv", timedOut: false };
@@ -96,24 +110,44 @@ const defaultSpawn: SpawnFn = async (argv, { timeoutMs, env }) => {
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
+    timeout: timeoutMs,
+    // 기본 SIGTERM이 아니라 SIGKILL을 쓴다 — 시그널을 무시하는 자식이 있으면 아래 파이프
+    // 읽기가 풀리지 않는다. `/usage` 조회는 정리할 상태가 없는 읽기라 즉시 종료로 잃는 게 없다.
+    killSignal: "SIGKILL",
   });
 
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    proc.kill();
-  }, timeoutMs);
+  let drainTimer: ReturnType<typeof setTimeout> | undefined;
+  const drained = await Promise.race([
+    Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]),
+    new Promise<null>((resolve) => {
+      drainTimer = setTimeout(() => resolve(null), timeoutMs + DRAIN_GRACE_MS);
+      drainTimer.unref();
+    }),
+  ]);
+  clearTimeout(drainTimer);
 
-  try {
-    const [stdout, stderr] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
-    const exitCode = await proc.exited;
-    return { exitCode, stdout, stderr, timedOut };
-  } finally {
-    clearTimeout(timer);
+  if (drained === null) {
+    // 프로세스는 네이티브 타임아웃이 이미 죽였는데 파이프가 닫히지 않았다. 여기서 더 기다리면
+    // 폴링 tick이 끝나지 않고 쌓이므로, 읽던 출력을 버리고 타임아웃으로 확정한다.
+    //
+    // 버린 읽기는 취소하지 않는다 — 스트림이 `Response`에 잠겨 있어 `cancel()`이 던진다. 그래서
+    // 이 경로를 한 번 타면 대기 중인 리더가 이벤트 루프를 붙잡고 있어 프로세스가 스스로 끝나지
+    // 않는다(실측 확인). 서버는 SIGINT/SIGTERM에서 `process.exit`으로 내려가므로 영향이 없다.
+    return { exitCode: null, stdout: "", stderr: "", timedOut: true };
   }
+
+  await proc.exited;
+  const [stdout, stderr] = drained;
+  return {
+    // 시그널 종료면 null(SpawnOutcome 계약). `await proc.exited`의 반환값은 시그널을 128+n으로
+    // 접어 주므로 쓰지 않는다.
+    exitCode: proc.exitCode,
+    stdout,
+    stderr,
+    // SIGKILL은 위에서 건 시한으로만 발생한다. 외부에서 온 SIGKILL이라도 출력은 불완전하므로
+    // 실패로 분류하는 쪽이 맞다.
+    timedOut: proc.signalCode === "SIGKILL",
+  };
 };
 
 function truncateDetail(s: string): string {

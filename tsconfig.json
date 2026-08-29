@@ -3,7 +3,7 @@
     "module": "esnext",
     "target": "ES2022",
     "lib": [
-      "ES2022"
+      "ES2023"
     ],
     "noEmit": true,
     "sourceMap": true,

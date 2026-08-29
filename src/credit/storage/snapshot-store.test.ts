@@ -219,6 +219,47 @@ describe("SnapshotStore 방어적 역직렬화", () => {
     const latest = store.latest();
     expect(latest?.sequence).toBe(1);
   });
+
+  test("case5d: 파일 DB는 WAL 로 열리고 close() 가 WAL 을 본 파일로 접는다", () => {
+    const dbPath = tmpDbPath();
+    const store = new SnapshotStore(dbPath);
+    store.init();
+    store.append(success(1, "2026-08-16T10:00:00.000Z"));
+
+    const check = new Database(dbPath);
+    const mode = check.query("PRAGMA journal_mode").get() as { journal_mode: string };
+    check.close();
+    expect(mode.journal_mode).toBe("wal");
+
+    store.close();
+    // 실측: `-wal` 파일은 남지만 체크포인트로 0바이트가 되고 내용은 DB 파일로 들어간다.
+    // 파일의 존재가 아니라 "미반영 로그가 남지 않았다"가 확인 대상이다.
+    if (fs.existsSync(`${dbPath}-wal`)) {
+      expect(fs.statSync(`${dbPath}-wal`).size).toBe(0);
+    }
+    // 그래서 닫은 뒤 재오픈으로 데이터가 읽힌다(BR1.3 재시작 연속성).
+    const reopened = new SnapshotStore(dbPath);
+    reopened.init();
+    expect(reopened.readAll()).toHaveLength(1);
+    reopened.close();
+  });
+
+  test("case5c: latest()를 거듭 불러도 같은 행을 돌려준다(한 행씩 내려가는 조회의 회귀 방어)", () => {
+    // bun:sqlite는 `db.query()`의 statement를 캐시하므로, 커서를 남기는 조회를 조기 이탈하면
+    // 다음 호출이 그 다음 행에서 이어진다. 렌더마다 부르는 함수라 그 함정이 곧 오답이 된다.
+    const store = new SnapshotStore(":memory:");
+    store.init();
+    store.append(success(1, "2026-08-16T10:00:00.000Z"));
+    store.append(success(2, "2026-08-16T11:00:00.000Z"));
+    store.append(success(3, "2026-08-16T12:00:00.000Z"));
+
+    expect(store.latest()?.sequence).toBe(3);
+    expect(store.latest()?.sequence).toBe(3);
+    expect(store.latest()?.sequence).toBe(3);
+    // readAll()과 섞어 불러도 서로 간섭하지 않는다(assembleCredit의 실제 호출 순서).
+    expect(store.readAll()).toHaveLength(3);
+    expect(store.latest()?.sequence).toBe(3);
+  });
 });
 
 describe("isValidSnapshot 형태 방어", () => {

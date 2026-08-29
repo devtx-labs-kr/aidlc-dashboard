@@ -1,8 +1,9 @@
 // HTTP entry point.
 //
 // Every request re-reads the workspace. That is deliberate: the whole read costs
-// ~10ms on a real run (4,228 audit blocks across 2 shards), so caching would only
-// add a staleness window to a dashboard whose entire purpose is not being stale.
+// ~10ms on one real run (4,228 audit blocks across 2 shards) and ~87ms on a bigger
+// one (4,604 blocks over 3 shards, 326 files), so caching would only add a
+// staleness window to a dashboard whose entire purpose is not being stale.
 //
 // The selected workspace lives in ONE mutable variable here. That is the only
 // mutable state in the process, and it is the price of letting the user pick a
@@ -153,20 +154,24 @@ export async function handle(
 
   const showHidden = url.searchParams.get("hidden") === "1";
 
-  // Usage context for the rendering routes: the Kiro store (when wired) plus the
-  // sanitised trend window from `?cw=` (invalid/absent → 30d, BR5.2). Always
-  // built now, not only when a store exists — the Claude token panel needs no
-  // store, so gating the whole context on `credit.store` would silently disable
-  // it. `assemble` still degrades the Kiro side to a `none` view on its own.
-  const usageCtx: UsageContext = {
-    store: credit.store,
-    window: resolveWindow(url.searchParams.get("cw")),
-    collecting: credit.isCollecting?.() ?? false,
-    mode: opts.usageMode,
-    memo: transcriptMemo,
-  };
-
   try {
+    // Usage context for the rendering routes: the Kiro store (when wired) plus the
+    // sanitised trend window from `?cw=` (invalid/absent → 30d, BR5.2). Always
+    // built now, not only when a store exists — the Claude token panel needs no
+    // store, so gating the whole context on `credit.store` would silently disable
+    // it. `assemble` still degrades the Kiro side to a `none` view on its own.
+    //
+    // Built INSIDE the try: `credit.isCollecting` is injected, so a throw here has
+    // to land on the error page like any other read failure rather than escaping
+    // to Bun's default 500 (NFR1.5 — credit never takes the dashboard down).
+    const usageCtx: UsageContext = {
+      store: credit.store,
+      window: resolveWindow(url.searchParams.get("cw")),
+      collecting: credit.isCollecting?.() ?? false,
+      mode: opts.usageMode,
+      memo: transcriptMemo,
+    };
+
     switch (url.pathname) {
       // ---- folder picker ----------------------------------------------------
       case "/pick":
@@ -310,6 +315,12 @@ export interface CreditSubsystem extends CreditRuntime {
   store?: CreditReadStore;
   pipeline?: Pollable;
   scheduler?: { stop(): void };
+  /**
+   * Closes the booted store, if it can be closed. A separate field rather than a
+   * method on `CreditReadStore`: that interface is the read contract `assembleCredit`
+   * consumes, and shutdown is not its business. No-ops for an injected test store.
+   */
+  closeStore?: () => void;
   degraded: boolean;
   isCollecting: () => boolean;
   markCollectionDone: () => void;
@@ -318,6 +329,7 @@ export interface CreditSubsystem extends CreditRuntime {
 /** Minimal shapes the boot sequence needs, so tests can inject failing seams. */
 interface StoreForBoot extends CreditReadStore, PipelineStore {
   init(): void;
+  close?(): void;
 }
 interface PipelineForBoot extends Pollable {
   init(): void;
@@ -383,6 +395,7 @@ export function bootCredit(deps: CreditBootDeps = {}): CreditSubsystem {
       store,
       pipeline,
       scheduler,
+      closeStore: () => store.close?.(),
       degraded: false,
       isCollecting,
       markCollectionDone,
@@ -396,9 +409,14 @@ export function bootCredit(deps: CreditBootDeps = {}): CreditSubsystem {
   }
 }
 
-/** Stop the polling scheduler's timer on shutdown (BR2.2). No-op when degraded. */
-export function shutdownCredit(scheduler?: { stop(): void }): void {
+/**
+ * Stop the polling scheduler's timer on shutdown (BR2.2), then close the store so
+ * SQLite folds its WAL back into the DB file. Both are optional: a degraded boot
+ * has neither, and an injected test store need not be closable — no-op then.
+ */
+export function shutdownCredit(scheduler?: { stop(): void }, closeStore?: () => void): void {
   scheduler?.stop();
+  closeStore?.();
 }
 
 // ---- process entry point --------------------------------------------------
@@ -440,21 +458,31 @@ if (import.meta.main) {
   // isolate it so a credit boot failure never blocks the server (NFR1.5).
   const credit = bootCredit({ intervalMs: opts.intervalMs });
 
-  // Clean up the polling timer on termination (BR2.2). The timer is unref'd, so
-  // the process can exit on its own; stopping is explicit belt-and-braces.
+  // Clean up the polling timer and close the store on termination (BR2.2). The
+  // timer is unref'd, so the process can exit on its own; stopping is explicit
+  // belt-and-braces. Closing is not — it is what checkpoints the WAL.
   process.on("SIGINT", () => {
-    shutdownCredit(credit.scheduler);
+    shutdownCredit(credit.scheduler, credit.closeStore);
     process.exit(0);
   });
   process.on("SIGTERM", () => {
-    shutdownCredit(credit.scheduler);
+    shutdownCredit(credit.scheduler, credit.closeStore);
     process.exit(0);
   });
 
   const server = Bun.serve({
-    hostname: HOST, // loopback-only bind (BR6.1, NFR1.1) — never 0.0.0.0
+    hostname: HOST, // loopback-only bind (BR6.1, NFR1.1) — Bun's own default is 0.0.0.0
     port: opts.port,
     fetch: (req) => handle(req, opts, credit),
+    // `handle` already turns read failures into the Korean error page. This is the
+    // last line: anything thrown outside its try (or while streaming a response)
+    // would otherwise leave through Bun's built-in 500, which is English and says
+    // nothing about which workspace was being read.
+    error(err) {
+      console.error("[aidlc-dashboard] 처리되지 않은 오류:", err);
+      const message = err instanceof Error ? err.message : String(err);
+      return html(errorPage(activeRoot ?? "(선택 없음)", `읽기 중 오류: ${message}`), 500);
+    },
   });
 
   console.log(
