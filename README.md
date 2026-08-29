@@ -123,8 +123,8 @@ bun run src/server.ts --root ~/path/to/ws    # 바로 그 워크스페이스로 
 - **Claude 토큰 패널은 워크스페이스 경로로 트랜스크립트를 찾는다.** 즉 cwd 가 그 워크스페이스인
   상태로 Claude Code 를 실행했을 때만 잡힌다. 다른 디렉터리에서 실행했거나 워크스페이스를
   옮긴 뒤라면 `데이터 없음` 이 된다. 이때는 찾으려던 경로를 화면에 밝힌다.
-- ⚠️**Windows 런처(`start.cmd`/`start.ps1`)는 Windows 에서 실행 검증하지 못했다**(개발 기계가
-  macOS). macOS 런처는 bash 3.2 더블클릭 경로까지 확인했다.
+- ⚠️**Windows 런처(`start.cmd`/`start.ps1`)는 Windows 에서 실행 검증하지 못했다.** macOS 런처는
+  bash 3.2 더블클릭 경로까지 확인했다.
 
 ---
 
