@@ -24,6 +24,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { CREDENTIALS, MACHINE, customerNames } from "./leak-patterns";
 
 const ROOT = path.join(import.meta.dir, "..");
 
@@ -53,17 +54,26 @@ const FORBIDDEN: readonly { pattern: RegExp; why: string }[] = [
 ];
 
 /**
- * Strings that would leak the operator's machine or a third party.
+ * Content patterns come from `leak-patterns.ts`, shared with the repository-wide
+ * audit (`bun run audit`). They used to be defined here and only here, which meant
+ * the two surfaces could drift: the archive check was the stricter one for a while
+ * and the repository had no check at all. One definition, two callers.
  *
- * `/Users/me/` is exempt because it is this codebase's documented placeholder (the
- * picker's input hint, the slug example). Exempting it matters: an audit that cries
- * wolf on every intended example gets silenced wholesale, and then it catches
- * nothing. It earned its keep on the first run by flagging a real customer name
- * sitting in a slug example — so read every hit, never blanket-suppress one.
+ * The customer names are read from outside the repository at build time, so this
+ * check is only as good as the machine it runs on — hence the count in the summary
+ * line and the warning when none loaded.
  */
-const SECRETS: readonly RegExp[] = [
-  /\b<operator>\b/i,
-  /\/Users\/(?!me\/)[a-z0-9._-]+\/(Development|Desktop)\//i,
+const customers = customerNames();
+const SECRETS: readonly { pattern: RegExp; why: string }[] = [
+  ...MACHINE,
+  ...CREDENTIALS,
+  ...customers.names.map((n) => ({
+    pattern: new RegExp(
+      `(^|[^a-z0-9가-힣])${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`,
+      "i",
+    ),
+    why: "고객사 식별자",
+  })),
 ];
 
 function read(p: string): string {
@@ -162,10 +172,12 @@ for (const rel of staged) {
   }
 }
 for (const rel of staged) {
-  if (!/\.(ts|md|json|sh|cmd|ps1)$/.test(rel)) continue;
   const body = read(path.join(stage, rel));
-  for (const re of SECRETS) {
-    if (re.test(body)) violations.push(`${rel} — 개인 식별 문자열 (${re.source})`);
+  // The reason is named; the match is redacted to three characters. A build log that
+  // prints the secret in full to prove it found one has published it again.
+  for (const { pattern, why } of SECRETS) {
+    const m = pattern.exec(body);
+    if (m) violations.push(`${rel} — ${why} [${(m[0] ?? "").trim().slice(0, 3)}…]`);
   }
 }
 if (violations.length > 0) {
@@ -192,4 +204,7 @@ fs.rmSync(work, { recursive: true, force: true });
 const kb = (fs.statSync(out).size / 1024).toFixed(0);
 console.log(`✓ ${out}`);
 console.log(`  v${version} · ${staged.length}개 파일 (구현 ${implFiles}) · ${kb}KB`);
-console.log(`  유출 감사: ${FORBIDDEN.length}개 패턴 + 개인정보 ${SECRETS.length}개 통과`);
+console.log(
+  `  유출 감사: 경로 ${FORBIDDEN.length}개 + 내용 ${SECRETS.length}개 통과${customers.rootsFound.length === 0 ? " ⚠ 고객사 목록 원천 없음 — 이름은 미검사" : ""}`,
+);
+console.log("  저장소 전체 감사는 별도다 — `bun run audit`");

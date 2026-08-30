@@ -11,7 +11,8 @@
     "typecheck": "bunx tsc -p ./ --noEmit",
     "lint": "bunx --bun @biomejs/biome check src/ scripts/",
     "format": "bunx --bun @biomejs/biome format --write src/ scripts/",
-    "verify": "bun run typecheck && bun run lint && bun test",
+    "verify": "bun run typecheck && bun run lint && bun test && bun run audit",
+    "audit": "bun run scripts/audit-repo.ts",
     "package": "bun run scripts/package.ts"
   },
   "devDependencies": {
