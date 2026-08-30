@@ -5,7 +5,7 @@
 
 import type { DashboardModel } from "../model/types";
 import type { GapSplit, StageEndKind, StageSpan, TimingReport } from "../scan/timing";
-import { dur, esc, mins, pill, section, shortTs } from "./common";
+import { esc, hours, mins, pill, section, shortTs } from "./common";
 
 /** Track offset+width as percentages of the whole run, for the gantt row. */
 function trackGeometry(
@@ -155,7 +155,7 @@ function reworkBlock(m: DashboardModel, classifiedSec: number): string {
   <td class="g-n">${esc(String(s.revisions || "—"))}${
     s.revisionHigh ? `<span class="mute"> /${esc(String(s.revisionHigh))}</span>` : ""
   }</td>
-  <td class="g-n"><b>${esc(dur(s.reworkSec))}</b></td>
+  <td class="g-n"><b>${esc(hours(s.reworkSec))}</b></td>
   <td class="g-load">${
     reasons
       ? `<details><summary>사유 ${s.feedback.length}건</summary><ul class="gaps">${reasons}</ul></details>`
@@ -166,7 +166,7 @@ function reworkBlock(m: DashboardModel, classifiedSec: number): string {
     .join("\n");
 
   return `<div class="time-stats">
-  <div class="unknown"><span class="time-stat-n">${esc(dur(r.reworkSec))}</span><span class="time-stat-l">재작업 ${esc(share)}%</span></div>
+  <div class="unknown"><span class="time-stat-n">${esc(hours(r.reworkSec))}</span><span class="time-stat-l">재작업 ${esc(share)}%</span></div>
   <div><span class="time-stat-n">${r.rejected}</span><span class="time-stat-l">반려</span></div>
   <div><span class="time-stat-n">${r.approved}</span><span class="time-stat-l">승인</span></div>
   <div><span class="time-stat-n">${r.revisions}</span><span class="time-stat-l">수정 회차</span></div>
@@ -179,7 +179,7 @@ function reworkBlock(m: DashboardModel, classifiedSec: number): string {
 </table></div>
 <p class="note">재작업 = <b>첫 반려부터 마지막 승인까지</b>. 두 번 반려된 stage 는 그 사이 승인까지 포함한
   "아직 받아들여지지 않은 시간"이며, 회차별 합이 아닙니다 — 원장에 수정 회차의 종료 표시가 없습니다.
-  ${share}% 는 분류 대상 구간(${esc(dur(classifiedSec))}) 기준.${
+  ${share}% 는 분류 대상 구간(${esc(hours(classifiedSec))}) 기준.${
     r.provisional ? " <b>~</b> 표시 stage 는 아직 승인 전이라 계속 늘어납니다." : ""
   }</p>`;
 }
@@ -199,7 +199,7 @@ ${parts
   .map(
     ([kind, label, seconds]) =>
       `<span class="${kind}" style="width:${pct(seconds, total)}%" title="${esc(
-        `${label} ${dur(seconds)} (${pct(seconds, total)}%)`,
+        `${label} ${hours(seconds)} (${pct(seconds, total)}%)`,
       )}"></span>`,
   )
   .join("")}
@@ -265,23 +265,23 @@ function workerTable(t: TimingReport): string {
       ? "두 수치가 거의 같음."
       : t.overlapSec > 0
         ? delta > 0
-          ? `합친 기록에서는 남의 이벤트가 내 대기를 메워 <b>${esc(dur(delta))} 만큼 덜 잡힘</b>
-             (clone 들이 ${esc(dur(t.overlapSec))} 겹쳐 일했다).`
-          : `합친 기록이 <b>${esc(dur(-delta))} 더 많음</b> — 겹치지 않은 인계 공백은 팀으로는 멈춘
+          ? `합친 기록에서는 남의 이벤트가 내 대기를 메워 <b>${esc(hours(delta))} 만큼 덜 잡힘</b>
+             (clone 들이 ${esc(hours(t.overlapSec))} 겹쳐 일했다).`
+          : `합친 기록이 <b>${esc(hours(-delta))} 더 많음</b> — 겹치지 않은 인계 공백은 팀으로는 멈춘
              시간이지만 개인 타임라인에는 부재.`
         : delta > 0
-          ? `차이 <b>${esc(dur(delta))}</b> 는 겹침이 아니라 인계 때문 — clone 들이 시간상 전혀 겹치지
+          ? `차이 <b>${esc(hours(delta))}</b> 는 겹침이 아니라 인계 때문 — clone 들이 시간상 전혀 겹치지
              않으므로(겹침 0), 한 clone 이 park 한 구간을 팀 단위로는 다른 clone 의 부재로 볼 수 없다.`
-          : `합친 기록이 <b>${esc(dur(-delta))} 더 많음</b> — clone 간 인계 공백
-             (${esc(dur(t.handoverSec))})은 팀으로는 멈춘 시간이지만 개인 타임라인에는 부재.`;
+          : `합친 기록이 <b>${esc(hours(-delta))} 더 많음</b> — clone 간 인계 공백
+             (${esc(hours(t.handoverSec))})은 팀으로는 멈춘 시간이지만 개인 타임라인에는 부재.`;
 
   // "병렬" is a claim about time, so it is made only when the windows actually
   // overlap. Measured on a real 3-shard run: 0 overlap, i.e. a sequential handover.
   const shapeLabel =
     t.overlapSec > 0
-      ? `clone ${t.clones}개 · 겹쳐 일한 시간 ${esc(dur(t.overlapSec))}`
+      ? `clone ${t.clones}개 · 겹쳐 일한 시간 ${esc(hours(t.overlapSec))}`
       : `clone ${t.clones}개 · 순차 인계(겹침 없음)${
-          t.handoverSec > 60 ? ` · 인계 공백 ${esc(dur(t.handoverSec))}` : ""
+          t.handoverSec > 60 ? ` · 인계 공백 ${esc(hours(t.handoverSec))}` : ""
         }`;
   const hostNote =
     t.workers.length > t.clones
@@ -292,11 +292,11 @@ function workerTable(t: TimingReport): string {
 
   return `<details open><summary>작업자별 분해 — ${shapeLabel}</summary>
 <div class="worker-stats">
-  <span><b>${esc(dur(t.personElapsedSec))}</b> 사람-시간 합</span>
-  <span><b>${esc(dur(t.personHumanWaitSec))}</b> 사용자 대기</span>
-  <span><b>${esc(dur(t.personParkedSec))}</b> 일시중지</span>
-  <span><b>${esc(dur(t.personObservedSec))}</b> 관측 실행</span>
-  <span><b>${esc(dur(t.personUnknownSec))}</b> 미분류</span>
+  <span><b>${esc(hours(t.personElapsedSec))}</b> 사람-시간 합</span>
+  <span><b>${esc(hours(t.personHumanWaitSec))}</b> 사용자 대기</span>
+  <span><b>${esc(hours(t.personParkedSec))}</b> 일시중지</span>
+  <span><b>${esc(hours(t.personObservedSec))}</b> 관측 실행</span>
+  <span><b>${esc(hours(t.personUnknownSec))}</b> 미분류</span>
   ${par ? `<span><b>${esc(par.toFixed(2))}×</b> 실효 병렬도</span>` : ""}
 </div>
 <div class="timeline-table-wrap"><table class="tbl">
@@ -304,7 +304,7 @@ function workerTable(t: TimingReport): string {
   <tbody>${rows}</tbody>
 </table></div>
 <p class="note">각 행은 <b>그 clone 의 타임라인만</b> 보고 계산 = "각 사람이 얼마나 기다렸나".
-  위쪽 팀 단위 중지·대기 합(${esc(dur(t.total.idleSec))})은 전 기록을 한 줄로 합친 값.
+  위쪽 팀 단위 중지·대기 합(${esc(hours(t.total.idleSec))})은 전 기록을 한 줄로 합친 값.
   ${deltaNote}</p>
 ${hostNote}
 ${
@@ -349,7 +349,7 @@ function trackAxis(t: TimingReport, runStart: number, runSpan: number): string {
       ? `<span class="ax-gap" style="left:${(
           ((runSpan - t.sinceLastEventSec) / runSpan) * 100
         ).toFixed(2)}%;width:${((t.sinceLastEventSec / runSpan) * 100).toFixed(2)}%" title="${esc(
-          `마지막 기록 이후 ${dur(t.sinceLastEventSec)} — 기록이 없어 분류하지 않는 구간`,
+          `마지막 기록 이후 ${hours(t.sinceLastEventSec)} — 기록이 없어 분류하지 않는 구간`,
         )}"></span>`
       : "";
   return `<div class="g-axis">${silence}${marks.join("")}</div>`;
@@ -371,7 +371,7 @@ function body(m: DashboardModel): string {
   const nowLine = `<p class="note">${
     inFlight.length
       ? `진행 중 ${inFlight
-          .map((s) => `<b>${esc(s.stage)}</b> ${esc(dur(s.elapsedSec))}`)
+          .map((s) => `<b>${esc(s.stage)}</b> ${esc(hours(s.elapsedSec))}`)
           .join(" · ")}`
       : "진행 중인 stage 없음"
   } · ${
@@ -389,22 +389,22 @@ function body(m: DashboardModel): string {
   const kpis = `<div class="time-stats">
   <div title="${esc(
     t.sinceLastEventSec > 0
-      ? `첫 기록 → 지금. 마지막 기록 이후 ${dur(t.sinceLastEventSec)} 은 아래 분류에 포함되지 않는다(기록이 없어 분류할 수 없음).`
+      ? `첫 기록 → 지금. 마지막 기록 이후 ${hours(t.sinceLastEventSec)} 은 아래 분류에 포함되지 않는다(기록이 없어 분류할 수 없음).`
       : "첫 기록 → 마지막 기록",
-  )}"><span class="time-stat-n">${esc(dur(runSpan))}</span><span class="time-stat-l">${
+  )}"><span class="time-stat-n">${esc(hours(runSpan))}</span><span class="time-stat-l">${
     t.parallel ? "팀 벽시계" : "전체 경과"
   }</span></div>
   <div class="wait"><span class="time-stat-n">${esc(
-    dur(t.total.humanWaitSec),
+    hours(t.total.humanWaitSec),
   )}</span><span class="time-stat-l">사용자 대기</span></div>
   <div class="parked"><span class="time-stat-n">${esc(
-    dur(t.total.parkedSec),
+    hours(t.total.parkedSec),
   )}</span><span class="time-stat-l">일시중지</span></div>
   <div class="observed"><span class="time-stat-n">${esc(
-    dur(t.total.observedSec),
+    hours(t.total.observedSec),
   )}</span><span class="time-stat-l">관측 실행</span></div>
   <div class="unknown"><span class="time-stat-n">${esc(
-    dur(t.total.unknownSec),
+    hours(t.total.unknownSec),
   )}</span><span class="time-stat-l">미분류</span></div>
 </div>
 ${
@@ -417,16 +417,16 @@ ${
     // The window of an open run ends at the read clock, so it keeps growing while
     // nothing happens — name that stretch instead of folding it into the span.
     t.sinceLastEventSec > 0
-      ? ` · ${pill(`마지막 기록 이후 ${dur(t.sinceLastEventSec)} 무기록`, "warn")}`
+      ? ` · ${pill(`마지막 기록 이후 ${hours(t.sinceLastEventSec)} 무기록`, "warn")}`
       : ""
   }${t.parallel ? ` · ${pill(`사본 ${t.clones}개`, "warn")}` : ""} · 위임 ${esc(
-    dur(t.total.delegatedSec),
+    hours(t.total.delegatedSec),
   )}</p>
 ${nowLine}
 ${mergedNote}
 <details${m.rework.rejected > 0 ? " open" : ""}><summary>재작업 — 반려 ${
     m.rework.rejected
-  }건 · ${esc(dur(m.rework.reworkSec))}</summary>
+  }건 · ${esc(hours(m.rework.reworkSec))}</summary>
 ${reworkBlock(m, runSpan - t.sinceLastEventSec)}
 </details>
 ${workerTable(t)}`;
@@ -473,7 +473,7 @@ ${
 ${
   t.total.inferredParkSec > 0 || t.total.parkAnomalies > 0
     ? `<p class="note warn">일시중지 중 ${esc(
-        dur(t.total.inferredParkSec),
+        hours(t.total.inferredParkSec),
       )}은 session 재개 이벤트로 추정${
         t.total.parkAnomalies > 0 ? ` · park 마커 이상 ${t.total.parkAnomalies}건` : ""
       }.</p>`

@@ -13,6 +13,7 @@ import * as path from "node:path";
 import { UsageError, expandHome, parseArgs } from "../cli";
 import { projectSlug } from "../credit/claude/transcript-reader";
 import { NoRunError, assemble } from "../model/assemble";
+import { dur, hours } from "../render/common";
 import { renderHealth } from "../render/health";
 import { renderBody, renderPage } from "../render/page";
 import { renderPicker } from "../render/picker";
@@ -318,6 +319,31 @@ describe("render", () => {
     expect(phases).toBeLessThan(matrix);
     expect(matrix).toBeLessThan(timeline);
     expect(secondary).not.toContain('id="deferrals"');
+  });
+
+  test("the timing panel never prints a day unit", () => {
+    // `d` reads as a WORKING day of about eight hours; the code means a 24-hour
+    // calendar day. On a real run the KPI row said `5.8d 팀 벽시계 · 1.2d 관측 실행`,
+    // which reads as "worked about a day" when 1.2d is 28.8 hours — a factor-of-three
+    // error on the number the panel exists to convey. One unit also makes the row
+    // comparable at a glance. The fixture's span is deliberately over 24h, so this
+    // assertion has something to catch.
+    const body = renderBody(m);
+    const start = body.indexOf('id="timeline"');
+    const timing = body.slice(start);
+    expect(m.timing.elapsedSec).toBeGreaterThan(86400);
+    expect(timing).not.toMatch(/\d\.\dd\b/);
+    expect(timing).toContain(`${(m.timing.elapsedSec / 3600).toFixed(1)}h`);
+  });
+
+  test("an age still rolls up to days — that is what the reader is asking", () => {
+    // dur() and hours() are different questions: "how long has this sat" wants days,
+    // "how much time went where" must not. Keep both formatters.
+    expect(dur(200000)).toBe("2.3d");
+    expect(hours(200000)).toBe("55.6h");
+    // Sub-hour resolution survives in both; `0.0h` for 45s would be worse than `45s`.
+    expect(hours(45)).toBe("45s");
+    expect(hours(1500)).toBe("25m");
   });
 
   test("the deferral panel names the route, the limit and the count", () => {
