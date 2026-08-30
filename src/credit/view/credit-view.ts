@@ -100,11 +100,17 @@ function warningBanner(warning: { raw: string; reason: string }): string {
 </div>`;
 }
 
-/** 추이 창 토글(radiogroup). 현재 창만 aria-checked="true". `?cw=` 링크로 서버 재렌더. */
+/**
+ * 추이 창 토글(radiogroup). 현재 창만 aria-checked="true". `?cw=` 링크로 서버 재렌더.
+ *
+ * 칩 모양은 `.window-toggle a` CSS가 전담한다 — 예전에 붙어 있던 `pickbtn` 클래스는
+ * `header.top nav` 스코프라 이 자리에서는 아무 스타일도 주지 않았고, 그래서 세 창이
+ * 맨 링크 세 개로 붙어 "7월 30일"처럼 읽혔다.
+ */
 function windowToggle(current: TrendWindow): string {
   const radios = WINDOWS.map(
     ({ w, label }) =>
-      `<a role="radio" aria-checked="${w === current ? "true" : "false"}" href="?cw=${w}" class="pickbtn">${esc(label)}</a>`,
+      `<a role="radio" aria-checked="${w === current ? "true" : "false"}" href="?cw=${w}">${esc(label)}</a>`,
   ).join("");
   return `<div class="window-toggle" role="radiogroup" aria-label="추이 기간 선택">${radios}</div>`;
 }

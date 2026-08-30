@@ -84,11 +84,11 @@ function modelTable(m: TokenViewModel): string {
 </table>`;
 }
 
-/** 창 토글(radiogroup). Kiro 패널과 같은 `?cw=` 링크로 서버 재렌더한다. */
+/** 창 토글(radiogroup). Kiro 패널과 같은 `?cw=` 링크·같은 `.window-toggle` 칩 CSS를 쓴다. */
 function windowToggle(current: TrendWindow): string {
   const radios = WINDOWS.map(
     ({ w, label }) =>
-      `<a role="radio" aria-checked="${w === current ? "true" : "false"}" href="?cw=${w}" class="pickbtn">${esc(label)}</a>`,
+      `<a role="radio" aria-checked="${w === current ? "true" : "false"}" href="?cw=${w}">${esc(label)}</a>`,
   ).join("");
   return `<div class="window-toggle" role="radiogroup" aria-label="집계 기간 선택">${radios}</div>`;
 }

@@ -390,9 +390,18 @@ table.tbl td code { white-space:nowrap; }
 .token-models th, .token-models td { white-space:nowrap; }
 .token-share { min-width:110px; }
 .token-share .note { margin-top:2px; }
+/* The window toggle only ever inherited the plain link colour — .pickbtn's chip
+   border is scoped to header.top nav, so the three windows rendered as three bare
+   blue words and "7일 30일 전체" read as a date ("7월 30일") at a glance. A period
+   selector cannot afford that misreading, so each label gets its own outline. The
+   selected chip is filled and bolder rather than merely recoloured, so which window
+   is active survives a colour-blind read. */
 .window-toggle { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
-.window-toggle a { text-decoration:none; }
-.window-toggle a[aria-checked="true"] { border-color:var(--accent); color:var(--accent); }
+.window-toggle a { text-decoration:none; color:var(--fg); font-size:var(--fs-2); line-height:1.4;
+  border:1px solid var(--line); border-radius:var(--r-pill); padding:3px 11px; white-space:nowrap; }
+.window-toggle a:hover { border-color:var(--accent); color:var(--accent); }
+.window-toggle a[aria-checked="true"] { border-color:var(--accent); background:var(--accent);
+  color:var(--bg); font-weight:600; }
 footer { color:var(--mute); font-size:var(--fs-1); text-align:center; padding:0 0 26px; }
 `;
 
