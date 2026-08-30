@@ -35,7 +35,7 @@
 // THREE RULES THAT KEEP THE READ HONEST:
 //
 //   1. Only a KNOWN slug becomes an owner. The 배정 cell is full of backticked
-//      tokens that are not stages — `[F5]`, `P-1`, `U-7`, `NEW-필수헤더-정식목록`,
+//      tokens that are not stages — `[F5]`, `P-1`, `U-7`, `NEW-헤더-목록`,
 //      `C22`. Every candidate token is tested against this run's state.md slugs
 //      first and the stage catalogue second, so an unrecognised cell reports
 //      `unassigned` rather than inventing a stage. This is the same reason

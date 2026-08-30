@@ -304,8 +304,9 @@ text
     expect(qs[0]?.answer).toBe("first");
   });
 
-  // The id shapes below all come from one long real run; see the header comment
-  // in scan/questions.ts for the measured counts per shape.
+  // The four id SHAPES below come from one long real run — see the header comment in
+  // scan/questions.ts for the measured counts. The prose carrying them is synthetic;
+  // only the shape is under test, and this repository is public.
   test("the id may be bracketed, an F follow-up, or suffixed", () => {
     const qs = parseQuestions(`## [Q1] 컴포넌트 경계를 무엇으로 가르는가
 
@@ -315,7 +316,7 @@ text
 
 [Answer]: C
 
-## F1. 판정 대상 6건 중 진입이 차단된 기획전이 있으면?
+## F1. 판정 대상 6건 중 진입이 차단된 항목이 있으면?
 
 [Answer]: A
 
@@ -1172,13 +1173,7 @@ None.
     test("a registry id is NOT a stage — never invent one", () => {
       // `NEW-...`, `P-1`, `[F5]`, `C22` are all registry ids that appear in real
       // 배정 cells. Only a slug the run or the catalogue knows becomes an owner.
-      for (const cell of [
-        "`NEW-필수헤더-정식목록`",
-        "`P-1`·`P-2`",
-        "`[F5]`",
-        "`C22`",
-        "전시 도메인",
-      ]) {
+      for (const cell of ["`NEW-헤더-목록`", "`P-1`·`P-2`", "`[F5]`", "`C22`", "외부 팀"]) {
         expect(resolveOwner(cell, statuses({ "code-generation": ["active"] }), catalog)).toEqual({
           ownerStatus: "unassigned",
         });
