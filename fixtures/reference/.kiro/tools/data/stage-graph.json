@@ -63,6 +63,15 @@
     "sensors": ["linter", "type-check"]
   },
   {
+    "slug": "build-and-test",
+    "number": "3.6",
+    "name": "Build And Test",
+    "phase": "construction",
+    "produces": [],
+    "consumes": [],
+    "sensors": []
+  },
+  {
     "slug": "deployment-pipeline",
     "number": "4.1",
     "name": "Deployment Pipeline",

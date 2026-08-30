@@ -20,10 +20,11 @@ import {
 } from "../credit/view/credit-model";
 import { type StageArtifact, listStageArtifacts } from "../scan/artifacts";
 import { type AuditLedger, readAuditLedger } from "../scan/audit";
+import { readDeferrals } from "../scan/deferrals";
 import { readHealth } from "../scan/hooks-health";
 import { scanConstructionMatrix } from "../scan/matrix";
 import { readDiaries } from "../scan/memory-diary";
-import { parseState } from "../scan/parser";
+import { type StageStatus, parseState } from "../scan/parser";
 import { readQuestions } from "../scan/questions";
 import { resolveState } from "../scan/resolve";
 import { buildRework } from "../scan/rework";
@@ -299,6 +300,25 @@ export function assemble(
   const health = readHealth(recordDir);
   const timing = buildTiming(ledger, now);
 
+  // The deferral ledger needs to know where each assigned stage currently stands.
+  // Keyed by slug with EVERY occurrence's status, because a Construction stage slug
+  // repeats once per unit and "the stage this was deferred to has finished" is only
+  // true when all of its copies have — see scan/deferrals.ts.
+  const stageStatuses = new Map<string, StageStatus[]>();
+  for (const p of state.phases) {
+    for (const s of p.stages) {
+      const seen = stageStatuses.get(s.slug);
+      if (seen) seen.push(s.status);
+      else stageStatuses.set(s.slug, [s.status]);
+    }
+  }
+  const deferrals = readDeferrals(recordDir, {
+    stageStatuses,
+    catalogSlugs: catalog ? new Set(catalog.bySlug.keys()) : undefined,
+    isStage,
+    now,
+  });
+
   const construction = state.phases.find((p) => p.key === "construction");
   const matrix = construction
     ? scanConstructionMatrix(recordDir, construction.stages, catalog)
@@ -461,6 +481,7 @@ export function assemble(
     sensors,
     questions,
     diaries,
+    deferrals,
     health,
     timing,
     blockers: buildBlockers(questions, state.currentStage, now),

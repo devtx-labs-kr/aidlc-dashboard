@@ -228,16 +228,26 @@ function streamBody(m: DashboardModel): string {
 </table>`;
 }
 
-// The audit-ledger stream panel is BUILT but not MOUNTED (user request): the
-// raw event list is noise for the people this dashboard is shown to. streamBody
-// stays intact — flip SHOW_STREAM to re-mount it with no other edit. Referencing
-// streamBody here (rather than deleting the call) is what keeps it live code the
-// type-checker still covers.
+// Both panels in this module are BUILT but not MOUNTED. Flip a flag to re-mount
+// one with no other edit; referencing the builders here (rather than deleting the
+// calls) is what keeps them live code the type-checker still covers.
+//
+// SHOW_STREAM — the raw event list is noise for the people this dashboard is shown to.
+//
+// SHOW_DIARY — 결정과 이슈 was the decision panel until 미뤄둔 결정 (render/deferrals.ts)
+// replaced it. It read `memory.md`, which records what the ORCHESTRATOR thought, and
+// on one real run that came to 140 결정 근거 · 63 계획 변경 · 28 후속 확인 — three digits of
+// prose in which nothing stated what the run still owed the reader or where it would
+// be asked again. The deferral ledger answers that from the engine's own mandated
+// section, with an assigned stage per item, so the two panels were not two views of
+// one thing: one of them was the question the reader actually had. `m.diaries` stays
+// in the model for /api/model, on the same footing as sensors, gates and hook health.
 const SHOW_STREAM = false;
+const SHOW_DIARY = false;
 
 export function renderHealth(m: DashboardModel): string {
   return [
-    section("결정과 이슈", diaryBody(m), "decisions"),
+    ...(SHOW_DIARY ? [section("결정과 이슈", diaryBody(m), "decisions")] : []),
     ...(SHOW_STREAM ? [section("감사 원장", streamBody(m), "stream")] : []),
   ].join("\n");
 }

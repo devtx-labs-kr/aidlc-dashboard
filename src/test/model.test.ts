@@ -13,6 +13,7 @@ import * as path from "node:path";
 import { UsageError, expandHome, parseArgs } from "../cli";
 import { projectSlug } from "../credit/claude/transcript-reader";
 import { NoRunError, assemble } from "../model/assemble";
+import { renderHealth } from "../render/health";
 import { renderBody, renderPage } from "../render/page";
 import { renderPicker } from "../render/picker";
 import { listStageArtifacts } from "../scan/artifacts";
@@ -121,8 +122,9 @@ describe("assemble on the fixture workspace", () => {
     expect(f.errors[0]?.message).toContain("not assignable");
   });
 
-  test("sensor, gate, and hook health data stay diagnostic without dedicated cards", () => {
+  test("sensor, gate, diary and hook health data stay diagnostic without cards", () => {
     const html = renderBody(m);
+    expect(html).not.toContain('id="decisions"');
     expect(html).not.toContain("<h2>Sensor");
     expect(html).not.toContain('id="sensors"');
     expect(html).not.toContain("not assignable");
@@ -143,6 +145,54 @@ describe("assemble on the fixture workspace", () => {
     expect(m.diaries.totals.deviations).toBe(1);
     expect(m.diaries.totals.openQuestions).toBe(2);
     expect(m.diaries.records.length).toBe(6);
+  });
+
+  test("deferral ledger resolves every owner state the fixture encodes", () => {
+    const d = m.deferrals;
+    expect(d.sections).toBe(4);
+    expect(d.emptySections).toBe(1); // one artifact declares `None.`
+    expect(d.rows).toBe(7);
+    expect(d.items.length).toBe(6); // one item is restated downstream (fan-in)
+    expect(d.counts).toEqual({
+      passed: 2,
+      current: 1,
+      ahead: 0,
+      outOfScope: 1,
+      nextCycle: 1,
+      unassigned: 1,
+    });
+    expect(d.catalogMissing).toBe(false);
+  });
+
+  test("a deferral restated downstream is ONE decision, dated from its first record", () => {
+    const shared = m.deferrals.items.find((i) => i.item === "두 유닛의 공통 타입을 어디에 두는가");
+    // Recorded by units-generation, restated by PU-A-core/functional-design. Counting
+    // mentions would double a single unresolved decision.
+    expect(shared?.sources.length).toBe(2);
+    expect(shared?.rel).toBe("inception/units-generation/unit-of-work-dependency.md");
+    expect(shared?.ownerStage).toBe("functional-design");
+    expect(shared?.ownerStatus).toBe("passed");
+  });
+
+  test("a SKIP-ped owner counts as passed — nobody is going to ask it", () => {
+    const skipped = m.deferrals.items.find((i) => i.ownerStage === "infrastructure-design");
+    expect(skipped?.ownerStatus).toBe("passed");
+  });
+
+  test("prose assumptions stay ownerless even when they name a stage", () => {
+    // One fixture bullet mentions `code-generation` in prose. The table is the
+    // contract; prose is not, so no owner is inferred from it.
+    expect(m.deferrals.assumptions.length).toBe(3);
+    const prose = m.deferrals.assumptions.find((a) => a.text.includes("code-generation"));
+    expect(prose).toBeDefined();
+    expect(m.deferrals.items.some((i) => i.item.includes("배포 대상 환경"))).toBe(false);
+  });
+
+  test("the ledger is invisible to the blocker panel, which is why it needs its own", () => {
+    // The fixture has exactly one blank [Answer]: — so one blocker — while carrying
+    // six unresolved decisions. Neither count implies the other.
+    expect(m.blockers.length).toBe(1);
+    expect(m.deferrals.items.length).toBe(6);
   });
 
   test("hook health reads heartbeats, drops and the stop guard", () => {
@@ -249,14 +299,15 @@ describe("render", () => {
     expect(body).toContain("c-partial");
   });
 
-  test("places decisions below credit and overview cards above timing", () => {
+  test("places the deferral ledger below credit and overview cards above timing", () => {
     const body = renderBody(m);
     const primaryStart = body.indexOf('<div class="col primary-col">');
     const secondaryStart = body.indexOf('<div class="col secondary-col">');
     const primary = body.slice(primaryStart, secondaryStart);
     const secondary = body.slice(secondaryStart);
 
-    expect(primary.indexOf('id="credit"')).toBeLessThan(primary.indexOf('id="decisions"'));
+    // Usage → deferrals: what the run spent, then what it still owes.
+    expect(primary.indexOf('id="credit"')).toBeLessThan(primary.indexOf('id="deferrals"'));
     expect(primary).not.toContain(">진행 개요</h2>");
 
     const overview = secondary.indexOf(">진행 개요</h2>");
@@ -266,21 +317,45 @@ describe("render", () => {
     expect(overview).toBeLessThan(phases);
     expect(phases).toBeLessThan(matrix);
     expect(matrix).toBeLessThan(timeline);
-    expect(secondary).not.toContain('id="decisions"');
+    expect(secondary).not.toContain('id="deferrals"');
   });
 
-  test("turns the stage diary into actionable decisions and issues", () => {
+  test("the deferral panel names the route, the limit and the count", () => {
     const body = renderBody(m);
-    expect(body).toContain("결정과 이슈");
-    expect(body).toContain("후속 확인 후보");
-    expect(body).toContain("최근 결정");
-    expect(body).toContain("최근 계획 변경");
-    expect(body).toContain("Stage별 전체 기록");
-    expect(body).toContain('class="pill mute has-help"');
-    expect(body).toContain('title="모호한 요구나 지시를 어떤 의미로 이해했는지 기록한 항목"');
-    expect(body).toContain('title="실행 중 원래 계획에서 달라진 내용과 그 이유를 기록한 항목"');
-    expect(body).toContain('title="아직 확인하거나 결정해야 할 작업이 남은 항목"');
-    expect(body).not.toContain(">Stage 일지<");
+    expect(body).toContain("미뤄둔 결정");
+    expect(body).toContain("지난 단계로 배정됨 · 2건");
+    expect(body).toContain("현재 단계가 물어야 할 것 · 1건");
+    // Every row shows origin → assigned stage, so the reader judges direction.
+    expect(body).toContain('<span class="dfr-from">units-generation</span> →');
+    expect(body).toContain('<span class="dfr-to">code-generation</span>');
+    // The one thing the ledger cannot show has to be said, not implied.
+    expect(body).toContain("답이 보이지 않는다는 뜻");
+    expect(body).toContain("다시 물어올 것");
+    // 0 goes mute rather than shouting in the urgent colour.
+    expect(body).toContain('class="dfr-stat t-zero"');
+    // No ahead items in this fixture → no empty toggle inviting a dead click.
+    expect(body).not.toContain("예정 단계로 배정됨");
+    expect(body).toContain("확인되지 않은 전제 3건");
+    expect(body).toContain("배정된 자리별 집계");
+    // Assignment cells arrive backticked; they render inside <code> without them.
+    expect(body).toContain("<code>code-generation (NEW-codegen-layout)</code>");
+  });
+
+  test("the stage-diary card is gone, and no empty slot is left where it was", () => {
+    // 결정과 이슈 read memory.md — what the ORCHESTRATOR thought — and measured
+    // against the deferral ledger on a real run it shared zero files and zero item
+    // text with it, while naming nothing the run still owed. Both panels in
+    // render/health.ts are now behind SHOW_ flags; renderBody must drop the empty
+    // string rather than interpolate a blank line into the column.
+    const body = renderBody(m);
+    expect(renderHealth(m)).toBe("");
+    expect(body).not.toContain("결정과 이슈");
+    expect(body).not.toContain("후속 확인 후보");
+    expect(body).not.toContain("Stage별 전체 기록");
+    expect(body).not.toContain("감사 원장");
+    expect(body).not.toMatch(/<div class="col primary-col">\s*\n\s*\n/);
+    // The diary still assembles: /api/model keeps it, like sensors and hook health.
+    expect(m.diaries.records.length).toBe(6);
   });
 
   test("escapes HTML from run content (credit warning)", () => {

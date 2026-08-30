@@ -17,6 +17,7 @@
 import type { TokenViewModel } from "../credit/claude/token-model";
 import type { CreditViewModel } from "../credit/view/credit-model";
 import type { StageArtifact } from "../scan/artifacts";
+import type { DeferralReport } from "../scan/deferrals";
 import type { HealthReport } from "../scan/hooks-health";
 import type { ConstructionMatrix } from "../scan/matrix";
 import type { DiaryReport } from "../scan/memory-diary";
@@ -143,6 +144,13 @@ export interface DashboardModel {
   sensors: SensorReport;
   questions: QuestionsReport;
   diaries: DiaryReport;
+  /**
+   * Decisions the run put off, and where each is scheduled to be asked again.
+   * Separate from `diaries` (what the orchestrator thought) and from `blockers`
+   * (a blank `[Answer]:`): a run can have zero blockers and still carry hundreds
+   * of these, which is exactly the case the reader cannot otherwise see.
+   */
+  deferrals: DeferralReport;
   health: HealthReport;
   timing: TimingReport;
   blockers: Blocker[];

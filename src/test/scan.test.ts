@@ -8,6 +8,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { parseAuditShard, parseContext } from "../scan/audit";
 import type { AuditEvent } from "../scan/audit";
+import { parseDeferralSections, resolveOwner } from "../scan/deferrals";
 import { parseDrops } from "../scan/hooks-health";
 import { type BoltDag, buildConstructionMatrix, parseBoltDag } from "../scan/matrix";
 import { parseDiary, readDiaries } from "../scan/memory-diary";
@@ -1022,5 +1023,178 @@ describe("rework", () => {
     expect(r.reworkSec).toBe(0);
     expect(r.rejected).toBe(0);
     expect(r.approved).toBe(1);
+  });
+});
+
+describe("deferral ledger", () => {
+  const STRUCTURED = `# Requirements
+
+## Functional Requirements
+
+irrelevant
+
+## Assumptions & Open Questions
+
+### Assumptions
+
+- \`[assumption]\` 배포 대상이 하나라는 전제. 확인 절차가 없다.
+- 태그가 없는 불릿은 전제가 아니다.
+
+### Open questions
+
+| 항목 | 배정 |
+| --- | --- |
+| 공통 타입의 자리 | \`functional-design\` |
+| 회귀 기준선 | \`build-and-test\` (\`C22\`) |
+
+## Review
+
+- 이 절은 대장 밖이다.
+`;
+
+  test("reads the mandated table and only the tagged assumptions", () => {
+    const p = parseDeferralSections(STRUCTURED);
+    expect(p.sections).toBe(1);
+    expect(p.rows).toEqual([
+      { item: "공통 타입의 자리", assignment: "`functional-design`" },
+      { item: "회귀 기준선", assignment: "`build-and-test` (`C22`)" },
+    ]);
+    expect(p.assumptions).toEqual(["배포 대상이 하나라는 전제. 확인 절차가 없다."]);
+    expect(p.declaredNone).toBe(false);
+  });
+
+  test("the header row is not an item — the |---| separator is what admits rows", () => {
+    // Without the separator guard the header itself becomes an open item called
+    // "항목", which then reads as a permanent unresolved decision on the page.
+    const p = parseDeferralSections(STRUCTURED);
+    expect(p.rows.map((r) => r.item)).not.toContain("항목");
+  });
+
+  test("the LAST cell is the assignment, so a 3-column variant still resolves", () => {
+    const p = parseDeferralSections(`## Assumptions & Open Questions
+
+### Open questions
+
+| 항목 | 무엇이 없어서 못 정하는가 | 배정 |
+| --- | --- | --- |
+| 격리 경계 | 환경 정보 없음 | \`infrastructure-design\` |
+`);
+    expect(p.rows).toEqual([{ item: "격리 경계", assignment: "`infrastructure-design`" }]);
+  });
+
+  test("a section ends at the next same-level heading", () => {
+    const p = parseDeferralSections(STRUCTURED);
+    // "이 절은 대장 밖이다." lives under ## Review and must not become an assumption.
+    expect(p.assumptions.some((a) => a.includes("대장 밖"))).toBe(false);
+  });
+
+  test("flat shape: bullets straight under the H2, no subsections", () => {
+    const p = parseDeferralSections(`## Assumptions & Open Questions
+
+- \`[assumption]\` 한 문장이 두 줄로
+  줄바꿈되어도 하나의 전제다.
+`);
+    expect(p.rows).toEqual([]);
+    expect(p.assumptions).toEqual(["한 문장이 두 줄로 줄바꿈되어도 하나의 전제다."]);
+  });
+
+  test("`None.` is an explicit nothing-open, distinct from no section at all", () => {
+    const p = parseDeferralSections(`## Assumptions & Open Questions
+
+None.
+`);
+    expect(p.rows).toEqual([]);
+    expect(p.assumptions).toEqual([]);
+    expect(p.declaredNone).toBe(true);
+    // Both mandated subsections present and both empty still counts as declared.
+    const q = parseDeferralSections(`## Assumptions & Open Questions
+
+### Assumptions
+
+None.
+
+### Open questions
+
+None.
+`);
+    expect(q.declaredNone).toBe(true);
+  });
+
+  test("a table under ### Assumptions contributes no items", () => {
+    const p = parseDeferralSections(`## Assumptions & Open Questions
+
+### Assumptions
+
+| 전제 | 근거 |
+| --- | --- |
+| 하나 | 없음 |
+`);
+    expect(p.rows).toEqual([]);
+  });
+
+  describe("owner resolution", () => {
+    const statuses = (m: Record<string, StageInfo["status"][]>) => new Map(Object.entries(m));
+    const catalog = new Set(["functional-design", "code-generation", "build-and-test", "operate"]);
+
+    test("every occurrence done or skipped → passed", () => {
+      const r = resolveOwner(
+        "`functional-design`",
+        statuses({ "functional-design": ["done", "skipped"] }),
+        catalog,
+      );
+      expect(r).toEqual({ ownerStage: "functional-design", ownerStatus: "passed" });
+    });
+
+    test("any occurrence in flight → current, even beside a finished copy", () => {
+      // A Construction slug repeats once per unit; one unit still working means the
+      // question can still be asked, which is the safe direction to err in.
+      const r = resolveOwner(
+        "`code-generation`",
+        statuses({ "code-generation": ["done", "active"] }),
+        catalog,
+      );
+      expect(r).toEqual({ ownerStage: "code-generation", ownerStatus: "current" });
+    });
+
+    test("not started → ahead", () => {
+      expect(
+        resolveOwner("`build-and-test`", statuses({ "build-and-test": ["pending"] }), catalog),
+      ).toEqual({ ownerStage: "build-and-test", ownerStatus: "ahead" });
+    });
+
+    test("in the catalogue but not in this run → outOfScope", () => {
+      expect(resolveOwner("`build-and-test` (`C22`)", statuses({}), catalog)).toEqual({
+        ownerStage: "build-and-test",
+        ownerStatus: "outOfScope",
+      });
+    });
+
+    test("a registry id is NOT a stage — never invent one", () => {
+      // `NEW-...`, `P-1`, `[F5]`, `C22` are all registry ids that appear in real
+      // 배정 cells. Only a slug the run or the catalogue knows becomes an owner.
+      for (const cell of [
+        "`NEW-필수헤더-정식목록`",
+        "`P-1`·`P-2`",
+        "`[F5]`",
+        "`C22`",
+        "전시 도메인",
+      ]) {
+        expect(resolveOwner(cell, statuses({ "code-generation": ["active"] }), catalog)).toEqual({
+          ownerStatus: "unassigned",
+        });
+      }
+    });
+
+    test("explicitly pushed past this run → nextCycle", () => {
+      for (const cell of ["다음 차수", "이후 차수 (`NEW-x`)", "next cycle"]) {
+        expect(resolveOwner(cell, statuses({}), catalog).ownerStatus).toBe("nextCycle");
+      }
+    });
+
+    test("without a catalogue an out-of-scope stage degrades to unassigned, not to a guess", () => {
+      expect(resolveOwner("`build-and-test`", statuses({}), undefined)).toEqual({
+        ownerStatus: "unassigned",
+      });
+    });
   });
 });

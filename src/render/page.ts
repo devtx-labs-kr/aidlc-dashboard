@@ -14,6 +14,7 @@ import { renderCredit } from "../credit/view/credit-view";
 import type { DashboardModel } from "../model/types";
 import { VERSION } from "../version";
 import { esc } from "./common";
+import { renderDeferrals } from "./deferrals";
 import { renderHealth } from "./health";
 import { renderOverview } from "./overview";
 import { renderTimeline } from "./timeline";
@@ -250,12 +251,51 @@ tr.mx-skip { opacity:.4; } tr.mx-skip td { font-size:var(--fs-1); color:var(--mu
   .time-stats > div:nth-child(3), .time-stats > div:nth-child(5) { border-left:0; }
   .time-stats > div:nth-child(n+3) { border-top:1px solid var(--line); }
   .time-stats > div:nth-child(5) { grid-column:1 / -1; }
-  .diary-stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .diary-stats, .dfr-stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .diary-stat:nth-child(3) { border-left:0; border-top:1px solid var(--line); }
   .diary-stat:nth-child(4) { border-top:1px solid var(--line); }
+  .dfr-stat:nth-child(3) { border-left:0; border-top:1px solid var(--line); }
+  .dfr-stat:nth-child(4) { border-top:1px solid var(--line); }
   .diary-columns { grid-template-columns:1fr; }
   .diary-group + .diary-group { border-left:0; border-top:1px solid var(--line); padding-left:0; }
 }
+
+/* 미뤄둔 결정. Reuses the four-tile / list / details rhythm the diary card established
+   (render/health.ts, now unmounted — its .diary-* rules stay for that reason). Two
+   things here are deliberate: a tile's colour encodes urgency and a ZERO tile goes
+   mute, so an empty "지난 단계" does not shout in red; and every row carries its own
+   route — origin stage → assigned stage — which is how the reader judges direction
+   without the panel asserting one. */
+.dfr-stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); border-block:1px solid var(--line);
+  margin:0 0 11px; }
+.dfr-stat { min-width:0; padding:8px 10px; border-left:1px solid var(--line); cursor:help; }
+.dfr-stat:first-child { border-left:0; }
+.dfr-stat-n { display:block; font-size:var(--fs-5); line-height:1.2; font-weight:680;
+  font-variant-numeric:tabular-nums; }
+.dfr-stat-l { display:block; color:var(--mute); font-size:var(--fs-1); margin-top:2px; }
+.dfr-stat.t-bad .dfr-stat-n { color:var(--bad); }
+.dfr-stat.t-warn .dfr-stat-n { color:var(--warn); }
+.dfr-stat.t-ok .dfr-stat-n { color:var(--ok); }
+.dfr-stat.t-mute .dfr-stat-n, .dfr-stat.t-zero .dfr-stat-n { color:var(--mute); }
+.dfr-focus > h3 { margin:11px 0 7px; font-size:var(--fs-2); font-weight:650; }
+.dfr-focus:first-of-type > h3 { margin-top:0; }
+.dfr-list { list-style:none; margin:0; padding:0; }
+.dfr-item { padding:7px 0; border-bottom:1px solid var(--line); min-width:0; }
+.dfr-item:last-child { border-bottom:0; }
+.dfr-meta { display:flex; align-items:center; gap:7px; min-width:0; font-size:var(--fs-1); flex-wrap:wrap; }
+.dfr-route { color:var(--mute); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+.dfr-route .dfr-to { color:var(--fg); }
+.dfr-fan { color:var(--mute); border:1px solid var(--line); border-radius:var(--r-ctl); padding:0 4px;
+  flex:none; }
+.dfr-age { color:var(--mute); margin-left:auto; white-space:nowrap; font-variant-numeric:tabular-nums;
+  cursor:help; }
+.dfr-source { flex:none; font-size:var(--fs-1); text-decoration:none; }
+.dfr-text { margin-top:4px; font-size:var(--fs-2); line-height:1.45; overflow-wrap:anywhere; }
+.dfr-assign { margin-top:3px; font-size:var(--fs-1); color:var(--mute); overflow-wrap:anywhere; }
+.dfr-more > summary, .dfr-ahead > summary, .dfr-rest > summary, .dfr-assum > summary,
+.dfr-owners > summary { padding-top:7px; }
+.dfr-ahead, .dfr-rest, .dfr-assum, .dfr-owners { border-top:1px solid var(--line); margin-top:11px;
+  padding-top:2px; }
 
 .blocker { border:1px solid var(--line); border-left-width:3px; border-radius:var(--r-box); padding:9px 11px; margin-bottom:8px; }
 .blocker.bad { border-left-color:var(--bad); } .blocker.warn { border-left-color:var(--warn); }
@@ -505,9 +545,9 @@ function warnings(m: DashboardModel): string {
  * The refreshable part of the page: everything inside #body-wrap. Served on its
  * own at /api/body so the poll swaps only this.
  *
- * The primary column keeps usage and decision context together. The secondary
- * column presents run structure before its timing analysis, so the reader sees
- * what ran before interpreting how long it took.
+ * The primary column is usage then the deferral ledger — what the run has spent and
+ * what it still owes. The secondary column presents run structure before its timing
+ * analysis, so the reader sees what ran before interpreting how long it took.
  */
 export function renderBody(m: DashboardModel): string {
   // Tag details elements so the poll can restore what the reader had open.
@@ -524,10 +564,18 @@ export function renderBody(m: DashboardModel): string {
     m.usage.kind === "claude"
       ? renderTokens(m.usage.tokens, m.usage.tokens.trend.window)
       : renderCredit(m.usage.credit, m.usage.credit.trend.window);
+  // Filtered rather than interpolated: renderHealth's panels are both behind
+  // SHOW_ flags, so it emits nothing today and a blank line would be left behind.
+  const primary = [
+    keyed(usage, "credit"),
+    keyed(renderDeferrals(m), "d"),
+    keyed(renderHealth(m), "h"),
+  ]
+    .filter((part) => part.trim().length > 0)
+    .join("\n");
   return `${warnings(m)}
 <div class="col primary-col">
-${keyed(usage, "credit")}
-${keyed(renderHealth(m), "h")}
+${primary}
 </div>
 <div class="col secondary-col">
 ${keyed(renderOverview(m), "o")}
