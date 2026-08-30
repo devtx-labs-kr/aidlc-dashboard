@@ -61,7 +61,12 @@ export function resolveWindow(cw: string | null | undefined): TrendWindow {
   return "30d";
 }
 
-/** 현재 지표 6종을 표로 렌더한다. 결측은 "—". 외부 텍스트(planName·resetDate)는 esc. */
+/**
+ * 현재 지표 5종을 표로 렌더한다. 결측은 "—". 외부 텍스트(planName)는 esc.
+ *
+ * `resetDate`는 파싱은 하되 표에 싣지 않는다 — 화면에서 뺀 필드이므로 `ParsedUsage`·저장·추이
+ * 에는 그대로 남아 있다.
+ */
 function metricsTable(current: ParsedUsage): string {
   const rows: [string, string][] = [
     ["플랜", esc(current.planName ?? "—")],
@@ -69,7 +74,6 @@ function metricsTable(current: ParsedUsage): string {
     ["잔량", fmtNumber(current.remainingAmount)],
     ["플랜 한도", fmtNumber(current.planLimit)],
     ["사용률", fmtRatio(current.usageRatio)],
-    ["리셋일", esc(current.resetDate ?? "—")],
   ];
   const body = rows
     .map(([k, v]) => `<tr><th>${esc(k)}</th><td class="g-n">${v}</td></tr>`)
