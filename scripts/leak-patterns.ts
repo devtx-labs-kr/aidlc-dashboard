@@ -5,8 +5,8 @@
 // means this is the ONE file no automated check reads. A human has to. Never put a
 // real customer name, hostname or token in here as a literal: names come from outside
 // the repository at runtime (see `customerNames()`), and everything below is either a
-// shape (`AKIA…`) or this codebase's own operator, which is already public in the
-// commit history and is here only so a fresh path leak is caught.
+// shape (`AKIA…`), or derived at runtime from the machine (see `operatorNames()` and
+// `customerNames()` — both read the environment, neither hardcodes a name).
 //
 // WHY THIS EXISTS SEPARATELY FROM THE ARCHIVE AUDIT. `package.ts` inspects the staged
 // zip, which by design excludes `*.test.ts` and `fixtures/`. That is correct for the
@@ -17,6 +17,7 @@
 // project name) reached test fixtures and this module's own header comments before
 // anyone looked. The archive audit passed every time, and passing was read as clean.
 
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -36,12 +37,55 @@ export interface LeakPattern {
  * example — so read every hit, never blanket-suppress one.
  */
 export const MACHINE: readonly LeakPattern[] = [
-  { pattern: /\b<operator>\b/i, why: "운영자 계정명" },
   {
     pattern: /\/Users\/(?!me\/)[a-z0-9._-]+\/(Development|Desktop|Documents)\//i,
     why: "다른 사람의 홈 경로",
   },
+  ...operatorNames().map((n) => ({
+    // Same boundary as the customer patterns: a hyphen COUNTS as a boundary, because
+    // the shape that actually leaks is the hyphenated slug
+    // (`-Users-<name>-Development-…`) and an earlier version excluded `-`, which made
+    // the pattern silently miss it. Probed both forms after fixing.
+    pattern: new RegExp(
+      `(^|[^a-z0-9가-힣])${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`,
+      "i",
+    ),
+    why: "운영자 계정명",
+  })),
 ];
+
+/**
+ * The operator's own account name, derived at runtime — never written here.
+ *
+ * It used to be a literal, which meant this file published the very string the audit
+ * was looking for. That was not a leak (21 commit author lines carry the same name),
+ * but it was incoherent: the check flagged its own repository. Deriving it also makes
+ * the audit correct on someone else's machine instead of only on one.
+ *
+ * The generic home-path pattern above already catches `/Users/<anyone>/Development/`
+ * regardless of name; these add the BARE name, which is how a username reaches a
+ * comment or a slug without a slash in front of it.
+ */
+function operatorNames(): string[] {
+  const out = new Set<string>();
+  const add = (v: string | undefined) => {
+    const n = (v ?? "").trim().toLowerCase();
+    // 4 chars is the floor that keeps `ci`, `me` and `dev` out of the pattern set.
+    if (n.length >= 4 && /^[a-z0-9][a-z0-9._-]*$/.test(n) && n !== "user" && n !== "root")
+      out.add(n);
+  };
+  try {
+    add(os.userInfo().username);
+  } catch {
+    // No passwd entry (some containers). The home-path pattern still applies.
+  }
+  for (const key of ["user.name", "user.email"]) {
+    const r = spawnSync("git", ["config", "--get", key], { encoding: "utf-8" });
+    const v = r.status === 0 ? r.stdout : "";
+    add(key === "user.email" ? v.split("@")[0] : v);
+  }
+  return [...out].sort();
+}
 
 /**
  * Credential SHAPES, not values. Cheap to check and the one class of leak that is
