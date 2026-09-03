@@ -1,7 +1,7 @@
 {
   "name": "aidlc-dashboard",
   "description": "Read-only web dashboard for an AI-DLC v2 run: status, progress, blockers, timing, health.",
-  "version": "1.5.2",
+  "version": "1.6.0",
   "private": true,
   "type": "module",
   "scripts": {
