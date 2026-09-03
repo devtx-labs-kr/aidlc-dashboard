@@ -348,7 +348,7 @@ describe("construction matrix", () => {
         { event: "UNIT_COMPLETED", stage: "code-generation", unit: "PU-A", fields: f },
         { event: later, stage: "code-generation", unit: "PU-A", fields: f },
       ]);
-      expect({ later, state: lc.state("PU-A", "code-generation") }).toEqual({
+      expect({ later, state: lc.state("PU-A", "code-generation").state }).toEqual({
         later,
         state: "unsettled",
       });
@@ -364,7 +364,7 @@ describe("construction matrix", () => {
         fields: f,
       })),
     );
-    expect(reopened.state("PU-A", "code-generation")).toBe("settled");
+    expect(reopened.state("PU-A", "code-generation").state).toBe("settled");
   });
 
   describe("unit receipts", () => {
@@ -383,7 +383,10 @@ describe("construction matrix", () => {
     const U = (event: string, ts: string, o: Partial<LifecycleEvent> = {}): LifecycleEvent =>
       E(event, ts, { ...o, fields: { "Run floor": FLOOR, ...(o.fields ?? {}) } });
     const st = (evs: LifecycleEvent[], unit = "api", opts = {}) =>
-      readUnitLifecycle(evs, opts).state(unit, S);
+      readUnitLifecycle(evs, opts).state(unit, S).state;
+    /** Why a cell is unverifiable — only `no-run-floor` has a known engine verdict. */
+    const why = (evs: LifecycleEvent[], unit = "api", opts = {}) =>
+      readUnitLifecycle(evs, opts).state(unit, S).reason;
 
     test("the `Run floor` FIELD is compared exactly, not just 'after the last boundary'", () => {
       // `if (auditBlockField(row.block, "Run floor") !== floorFor(unit)) continue;` — the
@@ -419,13 +422,44 @@ describe("construction matrix", () => {
       ).toBe("settled");
     });
 
-    test("a ledger with no `Run floor` field is UNVERIFIABLE, not unsettled", () => {
-      // The engine fails closed on pre-2.5.0 rows because it will re-fan the unit. A reader
-      // has no such recourse, and "this ledger predates the field" is a can't-tell — calling
-      // it ▩ would put a red cell on every older tree.
+    test("each unverifiable cause is carried, because they disagree on the ENGINE's verdict", () => {
+      // Only `no-run-floor` has a known engine answer — the exact-match test fails, so the
+      // engine re-fans the unit. The other three could settle or not, and neither is
+      // derivable here. One blanket "cannot check — not incomplete" label was wrong for the
+      // first case, which is why the cause travels with the cell.
+      const noFloor = [
+        E("STAGE_STARTED", T),
+        E("UNIT_COMPLETED", "2026-01-01T01:00:00Z", { unit: "api" }),
+      ];
+      expect(st(noFloor)).toBe("unverifiable");
+      expect(why(noFloor)).toBe("no-run-floor");
+
       expect(
-        st([E("STAGE_STARTED", T), E("UNIT_COMPLETED", "2026-01-01T01:00:00Z", { unit: "api" })]),
-      ).toBe("unverifiable");
+        why([E("STAGE_STARTED", T), U("UNIT_COMPLETED", T, { unit: "api" })], "api", {
+          teamOwnership: true,
+        }),
+      ).toBe("team-claim");
+
+      expect(
+        why([
+          E("STAGE_STARTED", T),
+          U("UNIT_COMPLETED", T, { unit: "api", fields: { Mode: "wave" } }),
+        ]),
+      ).toBe("wave-fingerprint");
+
+      // Two shards writing a boundary in the same second → the engine's `AMBIGUOUS:` floor.
+      expect(
+        why([
+          E("STAGE_STARTED", T, { shard: "a.md" }),
+          E("STAGE_STARTED", T, { shard: "b.md" }),
+          U("UNIT_COMPLETED", "2026-01-01T01:00:00Z", { unit: "api" }),
+        ]),
+      ).toBe("ambiguous-floor");
+
+      // A settled cell carries no reason at all.
+      expect(
+        why([E("STAGE_STARTED", T), U("UNIT_COMPLETED", "2026-01-01T01:00:00Z", { unit: "api" })]),
+      ).toBeUndefined();
     });
 
     test("cross-shard rows in one second reduce by the engine's safety rank", () => {

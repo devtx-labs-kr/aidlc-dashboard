@@ -79,11 +79,33 @@ export type StateCompat = "verified" | "unknown" | "incompatible";
  */
 export type ReceiptState = "settled" | "unsettled" | "unverifiable";
 
+/**
+ * WHY a receipt could not be checked. Carried rather than collapsed, because the four
+ * causes do not agree on what the ENGINE would say — and that is a different question
+ * from what this reader can prove:
+ *
+ *   no-run-floor        the engine's verdict is KNOWN and it is "uncovered": a row with no
+ *                       `Run floor` fails its exact-match test, and the engine will re-fan
+ *                       the unit. What is unknown is only whether the work is actually
+ *                       done. So this one must NOT be labelled "not incomplete".
+ *   team-claim          the claim FILE decides (`eventMatchesClaimAttempt`); the engine
+ *                       could settle it or not, and neither is derivable here.
+ *   wave-fingerprint    an artifact fingerprint decides; same.
+ *   ambiguous-floor     the floor is `AMBIGUOUS:<ts>#<digest>`, not reproducible; same.
+ */
+export type ReceiptReason = "no-run-floor" | "team-claim" | "wave-fingerprint" | "ambiguous-floor";
+
+export interface ReceiptVerdict {
+  state: ReceiptState;
+  /** Set only when `state` is `unverifiable`. */
+  reason?: ReceiptReason;
+}
+
 export interface UnitLifecycle {
   /** True when this stage has emitted any UNIT_* event, i.e. receipts are in force. */
   inUse: (stageSlug: string) => boolean;
-  /** How this unit's receipt for this stage reads. */
-  state: (unit: string, stageSlug: string) => ReceiptState;
+  /** How this unit's receipt for this stage reads, and why when it cannot be read. */
+  state: (unit: string, stageSlug: string) => ReceiptVerdict;
 }
 
 /** UNIT_* events, per audit-format.md. Any of them proves the ledger is in use. */
@@ -185,11 +207,11 @@ export function readUnitLifecycle(
     return floor;
   };
 
-  const out = new Map<string, ReceiptState>();
+  const out = new Map<string, ReceiptVerdict>();
   for (const [key, { stage, unit }] of pairs) {
     const floor = floorFor(stage, opts.teamOwnership ? unit : "");
     if (floor === null) {
-      out.set(key, "unverifiable");
+      out.set(key, { state: "unverifiable", reason: "ambiguous-floor" });
       continue;
     }
     // Under team ownership the engine compares each row's `Attempt Generation` with the
@@ -197,7 +219,7 @@ export function readUnitLifecycle(
     // a pass — and that file is outside the audit. Neither verdict is derivable, so the
     // whole pair is unverifiable; team/unit-major reads `## Unit Progress` instead.
     if (opts.teamOwnership) {
-      out.set(key, "unverifiable");
+      out.set(key, { state: "unverifiable", reason: "team-claim" });
       continue;
     }
 
@@ -207,12 +229,12 @@ export function readUnitLifecycle(
     // "this ledger predates the field" is a can't-tell, not a not-done: reporting it as ▩
     // would put a red cell on every older tree.
     if (current.length === 0 && mine.some(({ e }) => e.fields?.["Run floor"] === undefined)) {
-      out.set(key, "unverifiable");
+      out.set(key, { state: "unverifiable", reason: "no-run-floor" });
       continue;
     }
     // Wave mode adds an artifact-fingerprint check — but only for THIS attempt's rows.
     if (current.some(({ e }) => e.fields?.Mode === "wave")) {
-      out.set(key, "unverifiable");
+      out.set(key, { state: "unverifiable", reason: "wave-fingerprint" });
       continue;
     }
 
@@ -236,12 +258,12 @@ export function readUnitLifecycle(
 
     let settled = false;
     for (const { e } of reduced) settled = e.event === "UNIT_COMPLETED";
-    out.set(key, settled ? "settled" : "unsettled");
+    out.set(key, { state: settled ? "settled" : "unsettled" });
   }
 
   return {
     inUse: (slug) => inUse.has(slug),
-    state: (unit, slug) => out.get(`${slug}\u0001${unit}`) ?? "unsettled",
+    state: (unit, slug) => out.get(`${slug}\u0001${unit}`) ?? { state: "unsettled" },
   };
 }
 
@@ -306,6 +328,8 @@ export interface MatrixCell {
   expected: string[];
   /** expected − present, non-empty only when state is "partial". */
   missing: string[];
+  /** Why the receipt could not be checked. Set only when state is "unverified". */
+  receiptReason?: ReceiptReason;
 }
 
 /**
@@ -531,12 +555,19 @@ export function buildConstructionMatrix(
             ? "absent"
             : !artifactsMet
               ? "partial"
-              : receipt === "unsettled"
+              : receipt?.state === "unsettled"
                 ? "unsettled"
-                : receipt === "unverifiable"
+                : receipt?.state === "unverifiable"
                   ? "unverified"
                   : "complete";
-      return { unit: u.name, state, present, expected, missing };
+      return {
+        unit: u.name,
+        state,
+        present,
+        expected,
+        missing,
+        ...(receipt?.reason ? { receiptReason: receipt.reason } : {}),
+      };
     });
 
     const notApplicable = cells.filter((c) => c.state === "n/a").length;

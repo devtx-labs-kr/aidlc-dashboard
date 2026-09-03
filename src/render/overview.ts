@@ -8,7 +8,7 @@
 
 import type { DashboardModel } from "../model/types";
 import type { StageArtifact } from "../scan/artifacts";
-import type { CellState, ConstructionMatrix } from "../scan/matrix";
+import type { CellState, ConstructionMatrix, ReceiptReason } from "../scan/matrix";
 import type { AidlcState, StageStatus } from "../scan/parser";
 import { bar, esc, pill, section, shortTs } from "./common";
 
@@ -113,7 +113,29 @@ function phaseBlocks(state: AidlcState, artifacts: DashboardModel["artifacts"]):
 }
 
 /** Cell glyph + tooltip. The tooltip is where `missing` earns its keep. */
-function cellHtml(state: CellState, missing: string[], present: string[]): string {
+/**
+ * What each `unverified` cause means. Split per cause because only ONE of them has a known
+ * engine verdict: a row with no `Run floor` fails the engine's exact-match test, so the
+ * engine WILL re-run that unit — calling that "not incomplete" would be the same kind of
+ * over-claim this cell state exists to avoid.
+ */
+const RECEIPT_REASON: Record<ReceiptReason, string> = {
+  "no-run-floor":
+    "산출물은 다 있지만 완료 수령증에 `Run floor` 가 없습니다 — 엔진은 이 유닛을 미완으로 보고 다시 실행합니다. 실제 작업이 끝났는지는 감사 기록만으로 알 수 없습니다(필드 도입 전 원장)",
+  "team-claim":
+    "산출물은 다 있고, 완료 수령증은 claim 파일이 판정합니다 (team 소유) — 감사 기록만으로는 엔진이 완료로 볼지 알 수 없습니다. 위의 유닛 진행 표가 권위 있는 값입니다",
+  "wave-fingerprint":
+    "산출물은 다 있고, 완료 수령증은 산출물 지문이 판정합니다 (wave 모드) — 감사 기록만으로는 엔진이 완료로 볼지 알 수 없습니다",
+  "ambiguous-floor":
+    "산출물은 다 있고, 같은 시각의 사본 간 경계 때문에 attempt floor 가 재현되지 않습니다 — 감사 기록만으로는 엔진이 완료로 볼지 알 수 없습니다",
+};
+
+function cellHtml(
+  state: CellState,
+  missing: string[],
+  present: string[],
+  reason?: ReceiptReason,
+): string {
   const glyph =
     state === "complete"
       ? "█"
@@ -136,9 +158,11 @@ function cellHtml(state: CellState, missing: string[], present: string[]): strin
             // the cell must not read as done — a paused/stale/reopened unit lands here.
             `산출물은 다 있으나 완료 수령증(UNIT_COMPLETED)이 없습니다 — 일시중지·재개 대기·미승인 상태일 수 있습니다 (파일: ${present.join(", ")})`
           : state === "unverified"
-            ? // Not "not done" — "cannot be checked here". Merging this into unsettled put
-              // a red cell over every gap in this reader's reproduction of the engine.
-              `산출물은 다 있고, 완료 수령증은 감사 기록만으로 판정할 수 없습니다 — team 소유(claim 파일이 결정)·wave 모드(산출물 지문이 결정)·동시각 경계·Run floor 이전 원장 중 하나입니다 (파일: ${present.join(", ")})`
+            ? // Not "not done" — "cannot be checked here". Merging this into unsettled put a
+              // red cell over every gap in this reader's reproduction of the engine. But the
+              // four causes do not agree on the ENGINE's verdict, so each says its own thing:
+              // with no `Run floor` the engine's answer is known and it is "uncovered".
+              `${RECEIPT_REASON[reason ?? "no-run-floor"]} (파일: ${present.join(", ")})`
             : state === "n/a"
               ? `이 유닛 kind 에 계약된 산출물 없음${present.length ? ` (있는 파일: ${present.join(", ")})` : ""}`
               : "미착수";
@@ -161,7 +185,9 @@ function matrixTable(mx: ConstructionMatrix): string {
       if (!s.execute) {
         return `<tr class="mx-skip"><th>${esc(s.display)}</th><td colspan="${mx.units.length}">SKIP</td><td class="mx-n">—</td></tr>`;
       }
-      const cells = s.cells.map((c) => cellHtml(c.state, c.missing, c.present)).join("");
+      const cells = s.cells
+        .map((c) => cellHtml(c.state, c.missing, c.present, c.receiptReason))
+        .join("");
       // The denominator counts only units the stage actually contracts something
       // for; n/a units would otherwise read as outstanding work.
       const applicable = s.total - s.notApplicable;
@@ -177,6 +203,7 @@ function matrixTable(mx: ConstructionMatrix): string {
   const anyNa = mx.stages.some((s) => s.notApplicable > 0);
   const anyUnsettled = mx.stages.some((s) => s.unsettled > 0);
   const anyUnverified = mx.stages.some((s) => s.unverified > 0);
+  const anyNoFloor = mx.stages.some((s) => s.cells.some((c) => c.receiptReason === "no-run-floor"));
   const note = mx.contractAware
     ? `<p class="note">█ 완료(수령증 확인) · ▨ 착수했으나 산출물 미완(칸에 마우스를 올리면 무엇이 빠졌는지 표시) · · 미착수${
         anyUnsettled
@@ -184,7 +211,13 @@ function matrixTable(mx: ConstructionMatrix): string {
           : ""
       }${
         anyUnverified
-          ? " · ▤ 수령증을 감사 기록만으로 판정할 수 없음 — 미완이라는 뜻이 아닙니다"
+          ? // The blanket "does not mean incomplete" was wrong for one of the four causes:
+            // with no `Run floor` the engine's verdict IS "uncovered". So the legend names
+            // what is unknown — the engine's own answer, where it is unknown — rather than
+            // asserting the work is fine.
+            anyNoFloor
+            ? " · ▤ 완료 수령증을 감사 기록만으로 확인할 수 없음 (칸에 마우스를 올려 이유 확인) — 그중 `Run floor` 가 없는 칸은 엔진이 미완으로 보고 다시 실행합니다"
+            : " · ▤ 완료 수령증을 감사 기록만으로 확인할 수 없음 — 미완이라고 판정된 것은 아닙니다 (칸에 마우스를 올려 이유 확인)"
           : ""
       }${anyNa ? " · – 이 유닛 kind 에 계약된 산출물 없음(계 열의 괄호는 그 수)" : ""}</p>${
         mx.stateCompat === "verified"
