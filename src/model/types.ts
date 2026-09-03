@@ -22,7 +22,7 @@ import type { HealthReport } from "../scan/hooks-health";
 import type { ConstructionMatrix } from "../scan/matrix";
 import type { DiaryReport } from "../scan/memory-diary";
 import type { AidlcState } from "../scan/parser";
-import type { QuestionsReport } from "../scan/questions";
+import type { AskKind, QuestionsReport } from "../scan/questions";
 import type { ReworkReport } from "../scan/rework";
 import type { SensorReport } from "../scan/sensors";
 import type { TimingReport } from "../scan/timing";
@@ -86,6 +86,8 @@ export interface Blocker {
   unit?: string;
   /** Question heading, e.g. "Q1 — Plan Approval". */
   heading: string;
+  /** `confirmation` for a gate heading with no `Q<n>` id — see scan/questions.ts. */
+  kind: AskKind;
   /** Record-relative path of the questions artifact. */
   rel: string;
   /** When the artifact was last written — how long the ask has been open. */

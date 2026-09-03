@@ -15,12 +15,37 @@
 // where one unit's `[Answer]:` was blank and stop.drops corroborated with three
 // "pending-question carve-out" lines.
 //
-// THE HEADING IS WRITTEN FOUR WAYS. Measured across one long real run (23
+// THE HEADING IS WRITTEN FIVE WAYS. Measured across one long real run (23
 // artifacts, 195 `##` headings): `Q1 —` 119, `[Q1]` 58, `[F1]` 13, `F1.` 5. The
 // bracket is optional, follow-ups use an `F` id, and either form can carry a
-// suffix (`Q1-a`, `Q6-b`). Matching only the bare `Q<n>` form found 119 of 194
-// asks — 39% of that run's questions were invisible, including a whole stage's
-// worth. So the id is matched with the bracket and suffix optional.
+// suffix. Matching only the bare `Q<n>` form found 119 of 194 asks — 39% of that
+// run's questions were invisible, including a whole stage's worth. So the id is
+// matched with the bracket and suffix optional. The fifth way is the suffix
+// WITHOUT a hyphen: run B wrote `Q1-a`/`Q6-b`, a later run wrote `## Q6a. (후속)
+// …`, and requiring the hyphen dropped it — a real follow-up with a filled
+// `[Answer]:`. The hyphen is optional for that reason.
+//
+// AND NOT EVERY ASK HAS AN ID AT ALL. Three headings the engine writes carry a
+// gating `[Answer]:` with no `Q<n>`, and the engine's own parser treats them as
+// question sections — `aidlc-lib.ts` gates on
+// `(title === "Requested Changes Feedback" || questionId !== null)`:
+//
+//   ## Consolidated Summary Confirmation   the per-stage approval receipt, answered
+//                                         exactly `Looks correct` / `Request changes`
+//   ## Assumption Confirmation             `A. Accept assumptions` /
+//                                         `B. Convert to follow-up questions`
+//   ## Requested Changes Feedback          the free-text "What should change?"
+//
+// `stage-protocol.md` is explicit that these block: *"Do not revise anything until
+// the human provides that feedback"*, and the assumption one *"Do not invoke the
+// reviewer or proceed to completion while an assumption confirmation `[Answer]:`
+// is blank."* So a run parked on any of them is hard-stopped — and this reader
+// used to show it as ZERO blockers, because the id regex is all that opened a
+// span. Measured on one real tree: 103 `##` headings across its questions files,
+// 27 invisible, of which **14 were these three** (10 summary + 3 assumption + 1
+// feedback). All were filled there, so the hidden-blocker count was 0 — but the
+// summary confirmation exists at every stage gate, which makes it the single most
+// likely state for a run to be waiting in.
 //
 // TWO RULES KEEP THAT WIDENING FROM INVENTING QUESTIONS:
 //
@@ -44,6 +69,13 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+/**
+ * What kind of ask a heading is. `confirmation` is one of the three id-less gate
+ * headings; the remedy differs (pick a fixed option / write feedback rather than
+ * answer a question), so the panel says which one it is looking at.
+ */
+export type AskKind = "question" | "confirmation";
+
 /** One question block found in a questions artifact. */
 export interface QuestionEntry {
   /** Heading label, e.g. "Q1 — Plan Approval". */
@@ -51,6 +83,7 @@ export interface QuestionEntry {
   /** The answer text; empty string means unanswered. */
   answer: string;
   answered: boolean;
+  kind: AskKind;
 }
 
 /** One questions artifact. */
@@ -83,11 +116,27 @@ const PHASE_DIRS = ["initialization", "ideation", "inception", "construction", "
 const H2_RE = /^##\s/;
 /**
  * A `## ` heading carrying a question id: `Q1`, `[Q1]`, `F1`, `[F1]`, with an
- * optional `-a` suffix. The id must be followed by a delimiter or end of line, so
- * a prose heading that merely starts with the letter (`## U1의 완료는 …`) is not an
- * ask, and neither is one whose id is only mentioned mid-sentence.
+ * optional suffix that may or may not be hyphenated (`Q1-a`, `Q6a`). The id must be
+ * followed by a delimiter or end of line, so a prose heading that merely starts
+ * with the letter (`## U1의 완료는 …`) is not an ask, and neither is one whose id is
+ * only mentioned mid-sentence.
  */
-const QUESTION_HEADING_RE = /^##\s+\[?([QF]\d+(?:-[A-Za-z0-9]+)?)\]?(?:$|[\s.:\]])/;
+const QUESTION_HEADING_RE = /^##\s+\[?([QF]\d+(?:-?[A-Za-z0-9]+)?)\]?(?:$|[\s.:\]])/;
+/** Just the heading text, for the id-less gate headings below. */
+const H2_TITLE_RE = /^##\s+(.+?)\s*$/;
+/**
+ * The three id-less headings the engine writes as questions. Matched on the exact
+ * literal (lowercased) because `memory-seed/org.md` lists these H2s among the
+ * tokens a stage must write "character for character" — they stay English even in
+ * a Korean run, so there is no localisation to tolerate here. A suffix is NOT
+ * accepted: the protocol appends *sibling* sections sharing the title, and
+ * `aidlc-lib.ts` guards duplicates by that same exact name.
+ */
+const GATE_HEADINGS = new Set([
+  "consolidated summary confirmation",
+  "assumption confirmation",
+  "requested changes feedback",
+]);
 // The engine writes `[Answer]:` at line start; capture the remainder verbatim so
 // a multi-word answer with a trailing comment still reads as answered.
 const ANSWER_RE = /^\[Answer\]:[ \t]*(.*)$/;
@@ -103,14 +152,18 @@ const ANSWER_RE = /^\[Answer\]:[ \t]*(.*)$/;
  * the first heading, or under a prose heading) is ignored.
  */
 export function parseQuestions(text: string): QuestionEntry[] {
-  const spans: { heading: string; markers: string[] }[] = [];
-  let current: { heading: string; markers: string[] } | undefined;
+  const spans: { heading: string; markers: string[]; kind: AskKind }[] = [];
+  let current: { heading: string; markers: string[]; kind: AskKind } | undefined;
 
   for (const line of text.replace(/\r\n/g, "\n").split("\n")) {
     if (H2_RE.test(line)) {
-      current = QUESTION_HEADING_RE.test(line)
-        ? { heading: line.replace(/^##\s+/, "").trim(), markers: [] }
-        : undefined;
+      const title = (H2_TITLE_RE.exec(line)?.[1] ?? "").trim();
+      const kind: AskKind | undefined = QUESTION_HEADING_RE.test(line)
+        ? "question"
+        : GATE_HEADINGS.has(title.toLowerCase())
+          ? "confirmation"
+          : undefined;
+      current = kind ? { heading: title, markers: [], kind } : undefined;
       if (current) spans.push(current);
       continue;
     }
@@ -124,7 +177,7 @@ export function parseQuestions(text: string): QuestionEntry[] {
     .map((s) => {
       // Blank after the colon == still waiting. This is the whole signal.
       const answer = s.markers.find((m) => m.length > 0) ?? "";
-      return { heading: s.heading, answer, answered: answer.length > 0 };
+      return { heading: s.heading, answer, answered: answer.length > 0, kind: s.kind };
     });
 }
 

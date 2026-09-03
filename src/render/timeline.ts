@@ -51,7 +51,7 @@ function segmentTip(
     g.endedAt,
   )}\n사용자 대기 ${mins(g.humanWaitSec)}분 · 일시중지 ${mins(g.parkedSec)}분 · 관측 실행 ${mins(
     g.observedSec,
-  )}분 · 미분류 ${mins(g.unknownSec)}분`;
+  )}분 · 대화 ${mins(g.conversationSec)}분 · 미분류 ${mins(g.unknownSec)}분`;
 }
 
 function ganttRow(s: StageSpan, runStart: number, runSpan: number): string {
@@ -64,7 +64,11 @@ function ganttRow(s: StageSpan, runStart: number, runSpan: number): string {
       // made a night of waiting look identical to a night of work. End kind moves to
       // the outline; the four buckets are the fill.
       const total =
-        segment.humanWaitSec + segment.parkedSec + segment.observedSec + segment.unknownSec;
+        segment.humanWaitSec +
+        segment.parkedSec +
+        segment.observedSec +
+        segment.conversationSec +
+        segment.unknownSec;
       const fill =
         total > 0
           ? (
@@ -72,6 +76,7 @@ function ganttRow(s: StageSpan, runStart: number, runSpan: number): string {
                 ["wait", segment.humanWaitSec],
                 ["parked", segment.parkedSec],
                 ["observed", segment.observedSec],
+                ["conv", segment.conversationSec],
                 ["unknown", segment.unknownSec],
               ] as const
             )
@@ -110,6 +115,7 @@ function ganttRow(s: StageSpan, runStart: number, runSpan: number): string {
   <td class="g-n wait">${esc(mins(s.humanWaitSec))}</td>
   <td class="g-n parked">${esc(mins(s.parkedSec))}</td>
   <td class="g-n work">${esc(mins(s.observedSec))}</td>
+  <td class="g-n conv">${esc(mins(s.conversationSec))}</td>
   <td class="g-n unknown">${esc(mins(s.unknownSec))}</td>
   <td class="g-n attn"><b>${esc(mins(s.workSec))}</b></td>
   <td class="g-load" title="${esc(load)}">${esc(load)}</td>
@@ -136,14 +142,6 @@ function reworkBlock(m: DashboardModel, classifiedSec: number): string {
   const share = classifiedSec > 0 ? pct(r.reworkSec, classifiedSec) : "0.0";
   const rows = r.stages
     .map((s) => {
-      const reasons = s.feedback
-        .map(
-          (f) =>
-            `<li><span class="mute">${esc(shortTs(f.at))}</span> ${esc(
-              f.text.length > 400 ? `${f.text.slice(0, 400)}…` : f.text,
-            )}</li>`,
-        )
-        .join("");
       return `<tr>
   <th class="g-name">${esc(s.stage)}${
     s.settled
@@ -156,14 +154,38 @@ function reworkBlock(m: DashboardModel, classifiedSec: number): string {
     s.revisionHigh ? `<span class="mute"> /${esc(String(s.revisionHigh))}</span>` : ""
   }</td>
   <td class="g-n"><b>${esc(hours(s.reworkSec))}</b></td>
-  <td class="g-load">${
-    reasons
-      ? `<details><summary>사유 ${s.feedback.length}건</summary><ul class="gaps">${reasons}</ul></details>`
-      : "—"
-  }</td>
+  <td class="g-n">${s.feedback.length > 0 ? `${s.feedback.length}건` : "—"}</td>
 </tr>`;
     })
     .join("\n");
+
+  // The reason goes UNDER the table, at full card width. It is a human's dense
+  // paragraph — 1042 characters on one measured rejection, no line breaks — and a
+  // table cell competing with five numeric columns is the wrong container for it
+  // twice over: the cell clamped it visually AND the renderer sliced it at 400
+  // characters, dropping 642 of those 1042 without a mark to say so. "Shown
+  // verbatim" has to mean the whole thing, so nothing is sliced here.
+  const reasons = r.stages
+    .filter((s) => s.feedback.length > 0)
+    .flatMap((s) =>
+      s.feedback.map(
+        (f) => `<li class="why-item">
+  <div class="why-head"><b>${esc(s.stage)}</b><span class="mute">${esc(shortTs(f.at))}</span></div>
+  <p class="why-text">${esc(f.text)}</p>
+</li>`,
+      ),
+    )
+    .join("");
+  const reasonBlock = reasons
+    ? `<details class="why-all"><summary>사람이 적은 반려 사유 ${r.stages.reduce(
+        (n, s) => n + s.feedback.length,
+        0,
+      )}건 — 전문</summary>
+  <p class="note">원장에서 <code>**Feedback**</code>을 그대로 옮긴 것입니다. 반려·수정 쌍에서 중복은 제거했고
+  stage 당 최대 6건까지 보관합니다 — 요약하거나 자르지 않습니다.</p>
+  <ul class="why-list">${reasons}</ul>
+</details>`
+    : "";
 
   return `<div class="time-stats">
   <div class="unknown"><span class="time-stat-n">${esc(hours(r.reworkSec))}</span><span class="time-stat-l">재작업 ${esc(share)}%</span></div>
@@ -174,9 +196,10 @@ function reworkBlock(m: DashboardModel, classifiedSec: number): string {
   ${r.freezeBlocked ? `<div><span class="time-stat-n">${r.freezeBlocked}</span><span class="time-stat-l">검토중 편집 차단</span></div>` : ""}
 </div>
 <div class="timeline-table-wrap"><table class="tbl">
-  <thead><tr><th>stage</th><th title="STAGE_AWAITING_APPROVAL — 관문에 올린 횟수">제출</th><th>반려</th><th title="수정 회차 / state.md 의 누적 Revision count">수정</th><th title="첫 반려 → 마지막 승인">재작업</th><th>사람이 적은 반려 사유</th></tr></thead>
+  <thead><tr><th>stage</th><th title="STAGE_AWAITING_APPROVAL — 관문에 올린 횟수">제출</th><th>반려</th><th title="수정 회차 / state.md 의 누적 Revision count">수정</th><th title="첫 반려 → 마지막 승인">재작업</th><th title="사람이 적은 반려 사유 — 전문은 표 아래에 있습니다">사유</th></tr></thead>
   <tbody>${rows}</tbody>
 </table></div>
+${reasonBlock}
 <p class="note">재작업 = <b>첫 반려부터 마지막 승인까지</b>. 두 번 반려된 stage 는 그 사이 승인까지 포함한
   "아직 받아들여지지 않은 시간"이며, 회차별 합이 아닙니다 — 원장에 수정 회차의 종료 표시가 없습니다.
   ${share}% 는 분류 대상 구간(${esc(hours(classifiedSec))}) 기준.${
@@ -184,12 +207,39 @@ function reworkBlock(m: DashboardModel, classifiedSec: number): string {
   }</p>`;
 }
 
+/**
+ * The five buckets: one bar plus a legend that carries BOTH the hours and the share.
+ *
+ * The hours used to live in a tile strip above the bar — six equal tiles holding the
+ * window total and its five parts, which made the whole look like a sixth part and
+ * invited an addition that does not work (the five sum to the CLASSIFIED span, 52.1h,
+ * not to the 57.2h window; the 4.7h of 무기록 is in neither). The tiles also duplicated
+ * this legend, which already listed all five, and the sixth tile wrapped onto a row of
+ * its own. So the total is now a headline (it is the denominator, not a part) and the
+ * hours moved down here, next to the share they belong to.
+ */
 function breakdown(split: GapSplit, total: number): string {
   const parts = [
-    ["wait", "사용자 대기", split.humanWaitSec],
-    ["parked", "일시중지", split.parkedSec],
-    ["observed", "관측 실행", split.observedSec],
-    ["unknown", "미분류", split.unknownSec],
+    ["wait", "사용자 대기", split.humanWaitSec, "관문·질문이 열린 뒤 사람이 답하기까지"],
+    ["parked", "일시중지", split.parkedSec, "present 한 모든 사본이 park 상태였던 구간"],
+    [
+      "observed",
+      "관측 실행",
+      split.observedSec,
+      "5분 미만 이벤트 간격과 명시적 위임 구간의 합 — 순수 모델·CPU 실행 시간이 아닙니다",
+    ],
+    [
+      "conv",
+      "대화",
+      split.conversationSec,
+      "한 사본의 HUMAN_TURN 에서 바로 그 사본의 다음 HUMAN_TURN 까지. 엔진의 대화 응답(감사 기록을 남기지 않음)과 사람이 읽고 입력한 시간이 함께 들어 있고 원장에 그 경계가 없어, 대기도 실행도 아닌 자기 몫으로 둡니다",
+    ],
+    [
+      "unknown",
+      "미분류",
+      split.unknownSec,
+      "5분 이상인데 신뢰할 만한 마커가 없는 구간 — 실행으로 칠하지 않고 남겨 둡니다",
+    ],
   ] as const;
   return `<div class="time-breakdown" role="img" aria-label="${esc(
     parts.map(([, label, seconds]) => `${label} ${pct(seconds, total)}%`).join(", "),
@@ -207,8 +257,10 @@ ${parts
 <div class="time-legend">
 ${parts
   .map(
-    ([kind, label, seconds]) =>
-      `<span><i class="${kind}"></i>${label} <b>${esc(pct(seconds, total))}%</b></span>`,
+    ([kind, label, seconds, tip]) =>
+      `<span class="lgi" title="${esc(tip)}"><i class="${kind}"></i><b class="${kind}">${esc(
+        hours(seconds),
+      )}</b> ${esc(label)} <span class="mute">${esc(pct(seconds, total))}%</span></span>`,
   )
   .join("")}
 </div>`;
@@ -246,6 +298,7 @@ function workerTable(t: TimingReport): string {
   <td class="g-n wait">${esc(mins(w.humanWaitSec))}</td>
   <td class="g-n parked">${esc(mins(w.parkedSec))}</td>
   <td class="g-n work">${esc(mins(w.observedSec))}</td>
+  <td class="g-n conv">${esc(mins(w.conversationSec))}</td>
   <td class="g-n unknown">${esc(mins(w.unknownSec))}</td>
   <td class="g-n">${w.gatesApproved || ""}</td>
   <td class="g-load" title="${esc(w.stages.join(", "))}">${esc(w.stages.slice(0, 2).join(", "))}</td>
@@ -296,11 +349,12 @@ function workerTable(t: TimingReport): string {
   <span><b>${esc(hours(t.personHumanWaitSec))}</b> 사용자 대기</span>
   <span><b>${esc(hours(t.personParkedSec))}</b> 일시중지</span>
   <span><b>${esc(hours(t.personObservedSec))}</b> 관측 실행</span>
+  <span><b>${esc(hours(t.personConversationSec))}</b> 대화</span>
   <span><b>${esc(hours(t.personUnknownSec))}</b> 미분류</span>
   ${par ? `<span><b>${esc(par.toFixed(2))}×</b> 실효 병렬도</span>` : ""}
 </div>
 <div class="timeline-table-wrap"><table class="tbl">
-  <thead><tr><th>clone</th><th>이벤트</th><th>구간(분)</th><th>사용자 대기</th><th>중지</th><th>관측 실행</th><th>미분류</th><th>게이트</th><th>주 stage</th><th>유닛</th></tr></thead>
+  <thead><tr><th>clone</th><th>이벤트</th><th>구간(분)</th><th>사용자 대기</th><th>중지</th><th>관측 실행</th><th>대화</th><th>미분류</th><th>게이트</th><th>주 stage</th><th>유닛</th></tr></thead>
   <tbody>${rows}</tbody>
 </table></div>
 <p class="note">각 행은 <b>그 clone 의 타임라인만</b> 보고 계산 = "각 사람이 얼마나 기다렸나".
@@ -386,32 +440,28 @@ function body(m: DashboardModel): string {
        합친 <b>팀 단위</b> 수치. 개인별 시간은 <b>작업자별 분해</b> 참조.</p>`
     : "";
 
-  const kpis = `<div class="time-stats">
-  <div title="${esc(
+  // The window total is the DENOMINATOR of everything below it, not a sixth bucket, so
+  // it stands alone. `분류 대상` is stated beside it because that — not the window — is
+  // what the percentages divide by. The gap between the two is the 무기록 stretch, and
+  // that is named ONCE, in the date-range note below: the pill lives next to the last
+  // event, which is what it is about. Saying it here as well put the same fact twice
+  // within five lines. The number still has to be stated somewhere — an open run's
+  // window grows on every poll while the ledger does not — but once is enough.
+  const classified = runSpan - t.sinceLastEventSec;
+  const kpis = `<div class="time-head">
+  <span class="time-head-n" title="${esc(
     t.sinceLastEventSec > 0
       ? `첫 기록 → 지금. 마지막 기록 이후 ${hours(t.sinceLastEventSec)} 은 아래 분류에 포함되지 않는다(기록이 없어 분류할 수 없음).`
       : "첫 기록 → 마지막 기록",
-  )}"><span class="time-stat-n">${esc(hours(runSpan))}</span><span class="time-stat-l">${
-    t.parallel ? "팀 벽시계" : "전체 경과"
-  }</span></div>
-  <div class="wait"><span class="time-stat-n">${esc(
-    hours(t.total.humanWaitSec),
-  )}</span><span class="time-stat-l">사용자 대기</span></div>
-  <div class="parked"><span class="time-stat-n">${esc(
-    hours(t.total.parkedSec),
-  )}</span><span class="time-stat-l">일시중지</span></div>
-  <div class="observed"><span class="time-stat-n">${esc(
-    hours(t.total.observedSec),
-  )}</span><span class="time-stat-l">관측 실행</span></div>
-  <div class="unknown"><span class="time-stat-n">${esc(
-    hours(t.total.unknownSec),
-  )}</span><span class="time-stat-l">미분류</span></div>
+  )}">${esc(hours(runSpan))}</span>
+  <span class="time-head-l">${t.parallel ? "팀 벽시계" : "전체 경과"}</span>
+  <span class="time-head-sub">아래 비율의 기준은 <b>분류 대상 ${esc(hours(classified))}</b></span>
 </div>
 ${
   // The percentages are OF THE CLASSIFIED SPAN, not of the window: nothing past the
-  // last event is classified, so dividing by the window would make the four shares
+  // last event is classified, so dividing by the window would make the five shares
   // shrink every poll on a quiet tree and never reach 100%.
-  breakdown(t.total, runSpan - t.sinceLastEventSec)
+  breakdown(t.total, classified)
 }
 <p class="note">${esc(shortTs(t.firstTs))} ~ ${esc(shortTs(t.lastEventTs ?? t.lastTs))}${
     // The window of an open run ends at the read clock, so it keeps growing while
@@ -455,15 +505,17 @@ ${workerTable(t)}`;
 
   return `${kpis}
 <div class="timeline-table-wrap"><table class="tbl gantt">
-  <thead><tr><th>stage</th><th class="g-track-h">진입 구간${trackAxis(t, runStart, runSpan)}</th><th>전체(분)</th><th>사용자 대기</th><th>중지</th><th>관측 실행</th><th>미분류</th><th title="관측 실행 + 미분류 — 사람 대기와 중지를 뺀 시간. 실행 시간이 아니라 '대기로 설명되지 않는 시간'이며, 어느 stage가 비쌌는지는 전체(분)보다 이 열이 답한다.">작업 추정</th><th>작업량</th></tr></thead>
+  <thead><tr><th>stage</th><th class="g-track-h">진입 구간${trackAxis(t, runStart, runSpan)}</th><th>전체(분)</th><th>사용자 대기</th><th>중지</th><th>관측 실행</th><th title="사람 턴에서 바로 다음 사람 턴까지 — 엔진의 대화 응답과 사람이 읽고 입력한 시간이 섞여 있어 어느 쪽으로도 계상하지 않는다.">대화</th><th>미분류</th><th title="관측 실행 + 미분류 — 사람 대기·중지·대화를 뺀 시간. 실행 시간이 아니라 '대기로 설명되지 않는 시간'이며, 어느 stage가 비쌌는지는 전체(분)보다 이 열이 답한다.">작업 추정</th><th>작업량</th></tr></thead>
   <tbody>${rows}</tbody>
 </table></div>
 <p class="note">막대 <b>길이</b>는 달력 점유, <b>내부 색</b>은 그 구간의 분류 —
   <i class="lg wait"></i>대기 · <i class="lg parked"></i>중지 · <i class="lg observed"></i>관측 ·
-  <i class="lg unknown"></i>미분류. 테두리는 종료 방식: 청록=완료 · 회색=건너뜀 · 주황=승인대기 ·
+  <i class="lg conv"></i>대화 · <i class="lg unknown"></i>미분류. 테두리는 종료 방식: 청록=완료 · 회색=건너뜀 · 주황=승인대기 ·
   파랑=진행중 · 점선=재진입으로 대체(그 시도는 끝났고 다시 시작됨). 0초 stage 는 막대가 아니라 눈금.
   <b>어느 stage 가 비쌌는지는 길이가 아니라 「작업 추정」 열로 읽으세요</b> — 가장 긴 막대가 대기로만 채워질 수 있습니다.</p>
-<p class="note warn">관측 실행은 5분 미만 이벤트 간격과 명시적 위임 구간의 합이며, 순수 모델·CPU 실행 시간이 아님.</p>
+<p class="note warn">관측 실행은 5분 미만 이벤트 간격과 명시적 위임 구간의 합이며, 순수 모델·CPU 실행 시간이 아님.
+  <b>대화</b>는 사람 턴에서 바로 다음 사람 턴까지 — 엔진의 대화 응답은 감사 기록을 남기지 않으므로 그 구간에는
+  엔진 작업과 사람이 읽고 입력한 시간이 함께 들어 있고, 원장에 경계가 없어 <b>어느 쪽으로도 계상하지 않습니다</b>.</p>
 ${
   unknown
     ? `<details><summary>미분류 5분+ 공백 ${t.total.unknown.length}건 (상위 12)</summary><ul class="gaps">${unknown}</ul>

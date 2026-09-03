@@ -140,6 +140,30 @@ export interface StageCatalog {
   sourcePath: string;
   /** The harness dir it was found in, e.g. ".kiro" — shown on the page. */
   harnessDir: string;
+  /**
+   * The state-file schema version THIS harness supports, read from its own
+   * `tools/aidlc-lib.ts` (`export const CURRENT_STATE_VERSION = "8"`). Undefined when
+   * the constant is not found, in which case no version claim is made at all.
+   *
+   * Read from the harness rather than pinned here on purpose: neither
+   * `stage-graph.json` nor `harness.json` carries it, and a constant in this repo would
+   * go stale exactly as the STAGE_DISPLAY table did. Parsing one line out of the
+   * harness's own source is the only way to get the number the harness itself would
+   * enforce, and a spelling change degrades to silence instead of a false claim.
+   */
+  stateVersion?: string;
+}
+
+/** `export const CURRENT_STATE_VERSION = "8"` in the harness's own lib. */
+const STATE_VERSION_RE = /CURRENT_STATE_VERSION\s*(?::\s*[^=]+)?=\s*["'`](\d+)["'`]/;
+
+function readHarnessStateVersion(root: string, harness: string): string | undefined {
+  try {
+    const text = fs.readFileSync(path.join(root, harness, "tools", "aidlc-lib.ts"), "utf-8");
+    return STATE_VERSION_RE.exec(text)?.[1];
+  } catch {
+    return undefined;
+  }
 }
 
 function asStringArray(v: unknown): string[] {
@@ -210,26 +234,61 @@ export function readStageCatalog(root: string, harnessDir?: string): StageCatalo
     bySlug: new Map(stages.map((s) => [s.slug, s])),
     sourcePath,
     harnessDir: harness,
+    ...(() => {
+      const v = readHarnessStateVersion(root, harness);
+      return v ? { stateVersion: v } : {};
+    })(),
   };
 }
 
+/** Keep an artifact when it is kind-agnostic, or when it lists this unit's kind. */
+function applies(stage: CatalogStage, artifact: string, kind: string | undefined): boolean {
+  const kinds = stage.producesKinds[artifact];
+  if (!kinds) return true; // kind-agnostic — applies to every unit
+  return kind !== undefined && kinds.includes(kind);
+}
+
 /**
- * The artifacts a unit of the given `kind` is expected to produce for `stage`.
+ * The artifacts a unit of this `kind` MUST have for the stage to count as covered —
+ * `produces` filtered by `produces_kinds`, and nothing else.
  *
- * The rule (verified against a 9-unit run: 30 of 31 populated cells matched
- * exactly, and the one miss WAS the run's real blocker, not a rule error):
- * take produces ∪ optional_produces, then keep an artifact when producesKinds
- * has no entry for it (applies to all kinds) or lists this kind.
+ * `optional_produces` IS DELIBERATELY EXCLUDED, because the engine excludes it. From
+ * `tools/aidlc-orchestrate.ts` (`unitCovered`): *"node.optional_produces entries are
+ * DELIBERATELY not checked here — they are artifacts the unit MAY write (marked
+ * CONDITIONAL in the stage body), so their absence never blocks coverage."*
  *
- * `kind` undefined (a run whose bolt_dag carries no kind) keeps only the
- * kind-agnostic artifacts — an under-claim, never an over-claim, so a cell can
- * read COMPLETE early but never falsely PARTIAL.
+ * Unioning the two was wrong in the one direction this module promises never to err in.
+ * On the v2.7 catalogue exactly one stage carries an optional artifact —
+ * `functional-design`, `frontend-components`, scoped to kind `ui` — so a **ui** unit
+ * that wrote both of its required artifacts (`functional-spec`, `traceability`) and not
+ * the conditional one read **partial** here while the engine had it covered. That is a
+ * falsely-PARTIAL cell, i.e. a blocker on screen that does not exist, and the old
+ * comment on this function promised it could not happen.
+ *
+ * `kind` undefined (a bolt_dag with no kinds) keeps only the kind-agnostic artifacts —
+ * an under-claim, so a cell may read COMPLETE early but never falsely PARTIAL.
+ */
+export function requiredArtifacts(stage: CatalogStage, kind: string | undefined): string[] {
+  return stage.produces.filter((a) => applies(stage, a, kind));
+}
+
+/**
+ * Everything that MAY appear — required ∪ conditional, same kind filter. Used for
+ * display ("this is the contract for this cell"), never for the complete/partial
+ * judgement. See `requiredArtifacts` for why the two must not be the same list.
  */
 export function expectedArtifacts(stage: CatalogStage, kind: string | undefined): string[] {
-  const all = [...stage.produces, ...stage.optionalProduces];
-  return all.filter((artifact) => {
-    const kinds = stage.producesKinds[artifact];
-    if (!kinds) return true; // kind-agnostic — applies to every unit
-    return kind !== undefined && kinds.includes(kind);
-  });
+  return [...stage.produces, ...stage.optionalProduces].filter((a) => applies(stage, a, kind));
+}
+
+/**
+ * True when the stage contracts nothing REQUIRED of this kind, so the cell is `n/a`
+ * rather than "not started". Mirrors the engine's two-step exactly: its empty-produces
+ * guard runs on the UNFILTERED list — *"a stage that declares no required produces at
+ * all can never be proven-covered"* — and only after that does the kind filter make a
+ * kind vacuously covered.
+ */
+export function vacuouslyCovered(stage: CatalogStage, kind: string | undefined): boolean {
+  if (stage.produces.length === 0) return false;
+  return requiredArtifacts(stage, kind).length === 0;
 }

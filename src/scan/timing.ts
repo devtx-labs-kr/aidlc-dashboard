@@ -17,11 +17,13 @@
 // most of it is the engine waiting for a human at an approval gate (measured on
 // one run: 58 of 79 minutes). So each gap between consecutive events is sorted:
 //
-//   HUMAN  a gate-opening event followed by HUMAN_TURN.
+//   HUMAN  a gate-opening event followed by one of the engine's answer receipts
+//          (GATE_CLOSE — HUMAN_TURN is only one of five).
 //   PARKED every clone PRESENT at that moment is between WORKFLOW_PARKED and
 //          WORKFLOW_UNPARKED, plus an inferred session break when an old ledger has
 //          no balanced park pair.
 //   ACTIVE event-dense time (<5 minutes) and delegation windows.
+//   CONV   one clone's HUMAN_TURN straight to its own next HUMAN_TURN.
 //   UNKNOWN a 5-minute+ gap with no trustworthy semantic marker.
 //
 // ACTIVE is deliberately called "observed", not "actual execution": the ledger
@@ -35,11 +37,21 @@
 // 38% and 0% of the wall clock without learning anything. Likewise `IDLE_FLOOR_SEC`
 // only trades humanWait against observed. Neither constant can create information;
 // what does is a rule that reads a marker the ledger actually carries — which is why
-// the park and delegation rules were widened instead.
+// the park, gate-close and delegation rules were widened instead.
+//
+// CONVERSATION IS THE ONE THING THAT STRADDLED THAT ARBITRARY CUT. `HUMAN_TURN` →
+// the same clone's next `HUMAN_TURN`, nothing in between, measured 58 gaps / 4.72h on
+// one run and **same-shard in all 58**. It is one phenomenon that the 300s cut split
+// into 2.95h of UNKNOWN and 1.77h of OBSERVED, so naming it does not move the cut —
+// it removes a split the cut had invented, which is why it earns a bucket where a
+// constant tweak would not. What it must NOT do is pick a side: the span holds the
+// engine's chat reply (which emits no audit event) and the human reading and typing,
+// and the ledger draws no boundary between them. So it is neither idle nor work, and
+// it is excluded from `idleSec` and `workSec` both.
 
 import type { AuditEvent, AuditLedger } from "./audit";
 
-/** Events that open a human wait: after one of these, a gap to HUMAN_TURN is IDLE. */
+/** Events that open a human wait: after one of these, a gap to a receipt is IDLE. */
 const GATE_OPEN = new Set([
   "DECISION_RECORDED",
   "QUESTION_ASKED",
@@ -48,11 +60,55 @@ const GATE_OPEN = new Set([
 ]);
 
 /**
+ * Events that CLOSE a human wait — the engine's documented answer receipts. Every one
+ * of them requires a human to have acted, per `knowledge/aidlc-shared/audit-format.md`,
+ * which lists them among the "authority-bearing receipts" only their owning tool may
+ * emit. Reading only `HUMAN_TURN` here left three real waits in UNKNOWN:
+ *
+ *   STAGE_AWAITING_APPROVAL → GATE_APPROVED    a gate opened and a human approved it.
+ *                                             The most unambiguous wait the engine has,
+ *                                             and it was filed as 미분류.
+ *   DECISION_RECORDED → SUMMARY_CONFIRMATION_RECORDED
+ *                                             audit-format: the summary choice is
+ *                                             "recorded after the matching prompt AND A
+ *                                             FRESH HUMAN TURN", so the span contains a
+ *                                             human decision by definition.
+ *   DECISION_RECORDED → QUESTION_ANSWERED     the documented authorization triple is
+ *                                             `DECISION_RECORDED → HUMAN_TURN →
+ *                                             QUESTION_ANSWERED`; HUMAN_TURN is
+ *                                             "omitted when the driver declares
+ *                                             AIDLC_UNATTENDED=1", and the pair then
+ *                                             collapses to these two.
+ *
+ * Measured on one real run: UNKNOWN 6.78h → 5.90h, 사용자 대기 2.17h → 3.20h (+47%),
+ * with only 0.16h traded out of `observed`. The gate-open precondition stays — this
+ * widens WHAT CLOSES a wait, never what opens one.
+ */
+const GATE_CLOSE = new Set([
+  "HUMAN_TURN",
+  "QUESTION_ANSWERED",
+  "SUMMARY_CONFIRMATION_RECORDED",
+  "GATE_APPROVED",
+  "GATE_REJECTED",
+]);
+
+/**
  * Session-resume markers. A gap ENDING in one of these was the human being away,
  * even with no gate event in front of it — measured on two runs where a 38- and a
  * 43-minute gap ran SENSOR_PASSED → GUARDRAIL_LOADED and was followed by a human.
+ *
+ * `SESSION_RESUMED` is the taxonomy's own resume event — *"Existing Claude Code session
+ * resumed (source=resume)"*, emitted by `hooks/aidlc-session-start.ts` — and it was
+ * missing while its sibling `SESSION_STARTED` was present. A 40-minute gap closed by it
+ * therefore landed in 미분류 instead of 일시중지, which is the one event name where that
+ * misfiling is unambiguous.
  */
-const SESSION_RESUME = new Set(["GUARDRAIL_LOADED", "HEALTH_CHECKED", "SESSION_STARTED"]);
+const SESSION_RESUME = new Set([
+  "GUARDRAIL_LOADED",
+  "HEALTH_CHECKED",
+  "SESSION_STARTED",
+  "SESSION_RESUMED",
+]);
 
 /** Delegation open/close — the span between them is a subagent working. */
 const AGENT_OPEN = new Set(["REVIEW_REQUESTED", "SUBAGENT_DISPATCHED", "MERGE_DISPATCH"]);
@@ -94,6 +150,13 @@ export interface GapSplit {
   inferredParkSec: number;
   /** Event-dense time and explicit delegation spans. */
   observedSec: number;
+  /**
+   * Chat exchange — one clone's `HUMAN_TURN` straight to its own next `HUMAN_TURN`,
+   * with no engine event in between. See the CONVERSATION note above `classifyGaps`.
+   * Deliberately outside both `idleSec` and `workSec`: it holds the engine's unaudited
+   * reply AND the human reading it, and the ledger records no boundary between them.
+   */
+  conversationSec: number;
   /** Long gaps with no trustworthy semantic classification. */
   unknownSec: number;
   /** Delegated time. Subset of observedSec. */
@@ -194,6 +257,13 @@ export interface WorkerSpan {
   humanWaitSec: number;
   parkedSec: number;
   observedSec: number;
+  /**
+   * Must be carried here too, or the row does not add up. `classifyGaps` already
+   * computes it per shard; dropping it left `사용자 대기 + 중지 + 관측 + 미분류` short of
+   * the row's own 구간 by exactly the conversation total — measured 4.72h of 28.38h on
+   * one shard, an unexplained hole in a table whose whole point is accounting.
+   */
+  conversationSec: number;
   unknownSec: number;
   delegatedSec: number;
   /** Compatibility aggregates. */
@@ -279,6 +349,7 @@ export interface TimingReport {
   personHumanWaitSec: number;
   personParkedSec: number;
   personObservedSec: number;
+  personConversationSec: number;
   personUnknownSec: number;
   /** Σ per-worker elapsed — person-time, not wall-clock. */
   personElapsedSec: number;
@@ -306,6 +377,7 @@ export function classifyGaps(events: AuditEvent[]): GapSplit {
   let parkedSec = 0;
   let inferredParkSec = 0;
   let observedSec = 0;
+  let conversationSec = 0;
   let unknownSec = 0;
   let delegatedSec = 0;
   let parkAnomalies = 0;
@@ -379,7 +451,7 @@ export function classifyGaps(events: AuditEvent[]): GapSplit {
     const parkedPresent = present.filter((shard) => parkedShards.has(shard));
     if (present.length > 0 && parkedPresent.length === present.length) {
       parkedSec += gap;
-    } else if (GATE_OPEN.has(a.event) && b.event === "HUMAN_TURN" && gap >= IDLE_FLOOR_SEC) {
+    } else if (GATE_OPEN.has(a.event) && GATE_CLOSE.has(b.event) && gap >= IDLE_FLOOR_SEC) {
       humanWaitSec += gap;
     } else if (SESSION_RESUME.has(b.event) && gap >= IDLE_FLOOR_SEC) {
       // Old ledgers do not always carry balanced park markers. Keep this
@@ -389,6 +461,12 @@ export function classifyGaps(events: AuditEvent[]): GapSplit {
     } else if (delegatedGaps.has(i)) {
       delegatedSec += gap;
       observedSec += gap;
+    } else if (a.event === "HUMAN_TURN" && b.event === "HUMAN_TURN" && a.shard === b.shard) {
+      // A chat exchange. Same shard is load-bearing: two clones' human turns next to
+      // each other in the merged ledger are two developers, not one conversation.
+      // No duration floor either — the classification reads the marker, not the clock,
+      // so a 3-second exchange is the same phenomenon as a 40-minute one.
+      conversationSec += gap;
     } else if (gap >= SUSPECT_SEC) {
       unknownSec += gap;
       unknown.push({ seconds: gap, fromEvent: a.event, toEvent: b.event, at: a.ts });
@@ -404,6 +482,7 @@ export function classifyGaps(events: AuditEvent[]): GapSplit {
     parkedSec,
     inferredParkSec,
     observedSec,
+    conversationSec,
     unknownSec,
     delegatedSec,
     parkAnomalies,
@@ -487,6 +566,7 @@ export function buildWorkers(events: AuditEvent[]): WorkerSpan[] {
       humanWaitSec: split.humanWaitSec,
       parkedSec: split.parkedSec,
       observedSec: split.observedSec,
+      conversationSec: split.conversationSec,
       unknownSec: split.unknownSec,
       delegatedSec: split.delegatedSec,
       idleSec: split.idleSec,
@@ -527,6 +607,7 @@ export function buildTiming(ledger: AuditLedger, nowTs?: string): TimingReport {
       personHumanWaitSec: 0,
       personParkedSec: 0,
       personObservedSec: 0,
+      personConversationSec: 0,
       personUnknownSec: 0,
       personElapsedSec: 0,
     };
@@ -642,6 +723,7 @@ export function buildTiming(ledger: AuditLedger, nowTs?: string): TimingReport {
     const humanWaitSec = sum((s) => s.humanWaitSec);
     const parkedSec = sum((s) => s.parkedSec);
     const observedSec = sum((s) => s.observedSec);
+    const conversationSec = sum((s) => s.conversationSec);
     const unknownSec = sum((s) => s.unknownSec);
     const delegatedSec = sum((s) => s.delegatedSec);
     const unknown = segments.flatMap((s) => s.unknown);
@@ -659,6 +741,7 @@ export function buildTiming(ledger: AuditLedger, nowTs?: string): TimingReport {
       parkedSec,
       inferredParkSec: sum((s) => s.inferredParkSec),
       observedSec,
+      conversationSec,
       unknownSec,
       delegatedSec,
       parkAnomalies: sum((s) => s.parkAnomalies),
@@ -722,6 +805,7 @@ export function buildTiming(ledger: AuditLedger, nowTs?: string): TimingReport {
     personHumanWaitSec: workers.reduce((n, w) => n + w.humanWaitSec, 0),
     personParkedSec: workers.reduce((n, w) => n + w.parkedSec, 0),
     personObservedSec: workers.reduce((n, w) => n + w.observedSec, 0),
+    personConversationSec: workers.reduce((n, w) => n + w.conversationSec, 0),
     personUnknownSec: workers.reduce((n, w) => n + w.unknownSec, 0),
     personElapsedSec,
     // Only meaningful when the clones actually overlap — see the field's doc.

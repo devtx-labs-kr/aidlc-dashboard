@@ -242,6 +242,12 @@ function streamBody(m: DashboardModel): string {
 // section, with an assigned stage per item, so the two panels were not two views of
 // one thing: one of them was the question the reader actually had. `m.diaries` stays
 // in the model for /api/model, on the same footing as sensors, gates and hook health.
+// ONE AXIS OF IT DID COME BACK, and not here: `## Open questions` is mandated in every
+// stage's memory.md by the engine's own memory template, and its entries do state a
+// debt ("재스캔 비용을 받아들일지 … 결정할 것"). It renders inside 미뤄둔 결정
+// (render/deferrals.ts, diaryOpenBlock) beside the other two ledgers, because that is
+// the panel answering the question those entries belong to. The other three axes are
+// what stays unmounted — mixing them back in is what made this card unreadable.
 const SHOW_STREAM = false;
 const SHOW_DIARY = false;
 

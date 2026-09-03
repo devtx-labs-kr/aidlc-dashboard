@@ -115,15 +115,33 @@ function phaseBlocks(state: AidlcState, artifacts: DashboardModel["artifacts"]):
 /** Cell glyph + tooltip. The tooltip is where `missing` earns its keep. */
 function cellHtml(state: CellState, missing: string[], present: string[]): string {
   const glyph =
-    state === "complete" ? "█" : state === "partial" ? "▨" : state === "n/a" ? "–" : "·";
+    state === "complete"
+      ? "█"
+      : state === "unsettled"
+        ? "▩"
+        : state === "unverified"
+          ? "▤"
+          : state === "partial"
+            ? "▨"
+            : state === "n/a"
+              ? "–"
+              : "·";
   const tip =
     state === "partial"
       ? `미완: ${missing.join(", ")}`
       : state === "complete"
         ? `완료: ${present.join(", ")}`
-        : state === "n/a"
-          ? `이 유닛 kind 에 계약된 산출물 없음${present.length ? ` (있는 파일: ${present.join(", ")})` : ""}`
-          : "미착수";
+        : state === "unsettled"
+          ? // Artifacts met, receipt missing. The engine treats this as UNCOVERED, so
+            // the cell must not read as done — a paused/stale/reopened unit lands here.
+            `산출물은 다 있으나 완료 수령증(UNIT_COMPLETED)이 없습니다 — 일시중지·재개 대기·미승인 상태일 수 있습니다 (파일: ${present.join(", ")})`
+          : state === "unverified"
+            ? // Not "not done" — "cannot be checked here". Merging this into unsettled put
+              // a red cell over every gap in this reader's reproduction of the engine.
+              `산출물은 다 있고, 완료 수령증은 감사 기록만으로 판정할 수 없습니다 — team 소유(claim 파일이 결정)·wave 모드(산출물 지문이 결정)·동시각 경계·Run floor 이전 원장 중 하나입니다 (파일: ${present.join(", ")})`
+            : state === "n/a"
+              ? `이 유닛 kind 에 계약된 산출물 없음${present.length ? ` (있는 파일: ${present.join(", ")})` : ""}`
+              : "미착수";
   // `n/a` needs a class the CSS can target, and "/" is not usable in one.
   return `<td class="mx-cell c-${state === "n/a" ? "na" : state}" title="${esc(tip)}">${glyph}</td>`;
 }
@@ -147,7 +165,9 @@ function matrixTable(mx: ConstructionMatrix): string {
       // The denominator counts only units the stage actually contracts something
       // for; n/a units would otherwise read as outstanding work.
       const applicable = s.total - s.notApplicable;
-      const n = `${s.complete}${s.partial ? `+${s.partial}▨` : ""}/${applicable}${
+      const n = `${s.complete}${s.unsettled ? `+${s.unsettled}▩` : ""}${
+        s.unverified ? `+${s.unverified}▤` : ""
+      }${s.partial ? `+${s.partial}▨` : ""}/${applicable}${
         s.notApplicable ? ` (–${s.notApplicable})` : ""
       }`;
       return `<tr><th>${esc(s.display)}${s.provisional ? '<span class="prov-mark" title="진행 중 — 수치는 계속 늘어남">~</span>' : ""}</th>${cells}<td class="mx-n">${esc(n)}</td></tr>`;
@@ -155,11 +175,27 @@ function matrixTable(mx: ConstructionMatrix): string {
     .join("");
 
   const anyNa = mx.stages.some((s) => s.notApplicable > 0);
+  const anyUnsettled = mx.stages.some((s) => s.unsettled > 0);
+  const anyUnverified = mx.stages.some((s) => s.unverified > 0);
   const note = mx.contractAware
-    ? `<p class="note">█ 계약 충족 · ▨ 착수했으나 산출물 미완(칸에 마우스를 올리면 무엇이 빠졌는지 표시) · · 미착수${
-        anyNa ? " · – 이 유닛 kind 에 계약된 산출물 없음(계 열의 괄호는 그 수)" : ""
-      }</p>`
-    : '<p class="note warn">stage-graph.json 부재로 계약 판정 불가 — 칸은 파일 유무만 뜻함</p>';
+    ? `<p class="note">█ 완료(수령증 확인) · ▨ 착수했으나 산출물 미완(칸에 마우스를 올리면 무엇이 빠졌는지 표시) · · 미착수${
+        anyUnsettled
+          ? " · ▩ 산출물은 다 있으나 완료 수령증(UNIT_COMPLETED) 없음 — 엔진도 이 유닛을 미완으로 봅니다"
+          : ""
+      }${
+        anyUnverified
+          ? " · ▤ 수령증을 감사 기록만으로 판정할 수 없음 — 미완이라는 뜻이 아닙니다"
+          : ""
+      }${anyNa ? " · – 이 유닛 kind 에 계약된 산출물 없음(계 열의 괄호는 그 수)" : ""}</p>${
+        mx.stateCompat === "verified"
+          ? ""
+          : '<p class="note warn">state.md 와 harness 의 State Version 을 대조하지 못해 <b>확인되지 않은 계약</b>입니다 — 계약 내용은 그대로 보여주지만, 엔진과 같은 완료 판정이라고 보증하지 않습니다</p>'
+      }`
+    : `<p class="note warn">stage-graph.json 부재로 계약 판정 불가 — 칸은 파일 유무${
+        // Receipts come from the audit, not the catalogue, so ▩ can appear with no
+        // catalogue at all. Claiming "file presence only" was wrong whenever it did.
+        mx.receiptAware ? "와 완료 수령증" : ""
+      }만 뜻함</p>`;
 
   const batches = mx.batches.length
     ? `<div class="dag">${mx.batches
@@ -181,12 +217,48 @@ ${note}
 ${batches}`;
 }
 
+/**
+ * The state's own `## Unit Progress` table, when there is one. This is the AUTHORITY in
+ * team/unit-major — an engine-owned projection of receipts, reviews and gates — so it is
+ * shown before the disk matrix and labelled as such, rather than being reconstructed.
+ */
+function unitProgressTable(up: NonNullable<AidlcState["unitProgress"]>): string {
+  const head = up.stageColumns.map((c) => `<th>${esc(c)}</th>`).join("");
+  const rows = up.rows
+    .map((r) => {
+      const cells = up.stageColumns
+        .map((c) => {
+          const st = r.stages[c];
+          return `<td class="mx-cell">${st ? esc(STAGE_GLYPH[st] ?? "·") : "·"}</td>`;
+        })
+        .join("");
+      const owner = r.owner && r.owner !== "-" ? esc(r.owner) : '<span class="mute">미배정</span>';
+      return `<tr><th>${esc(r.unit)}</th><td>${owner}</td>${cells}<td class="mx-cell">${
+        r.gate ? esc(STAGE_GLYPH[r.gate] ?? "·") : "·"
+      }</td>${r.merged ? `<td>${esc(r.merged)}</td>` : ""}</tr>`;
+    })
+    .join("");
+  const mergedCol = up.rows.some((r) => r.merged !== undefined);
+  return `<div class="mx-wrap"><table class="mx">
+  <thead><tr><th>unit</th><th>owner</th>${head}<th>gate</th>${
+    mergedCol ? "<th>merged</th>" : ""
+  }</tr></thead>
+  <tbody>${rows}</tbody>
+</table></div>
+<p class="note">state.md 의 <code>## Unit Progress</code> — 엔진이 수령증·리뷰·게이트를 반영해 매 <code>next</code> 마다 다시 쓰는
+  <b>권위 있는 값</b>입니다. 손으로 고친 내용은 라우팅·완료 근거가 되지 않습니다. 아래 매트릭스는 디스크에서 재구성한 별개의 진단입니다.</p>`;
+}
+
 export function renderOverview(m: DashboardModel): string {
   const parts: string[] = [];
 
   parts.push(section("진행 개요", hero(m.state, m.identity)));
   parts.push(section("Phase · Stage", phaseBlocks(m.state, m.artifacts)));
 
+  const up = m.state.unitProgress;
+  if (up && !up.malformed && up.rows.length > 0) {
+    parts.push(section("유닛 진행 (state.md 권위)", unitProgressTable(up), "unit-progress"));
+  }
   if (m.matrix) {
     parts.push(section("Construction 유닛 매트릭스", matrixTable(m.matrix), "matrix"));
   } else {

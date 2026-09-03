@@ -22,7 +22,7 @@ import { type StageArtifact, listStageArtifacts } from "../scan/artifacts";
 import { type AuditLedger, readAuditLedger } from "../scan/audit";
 import { readDeferrals } from "../scan/deferrals";
 import { readHealth } from "../scan/hooks-health";
-import { scanConstructionMatrix } from "../scan/matrix";
+import { type StateCompat, readUnitLifecycle, scanConstructionMatrix } from "../scan/matrix";
 import { readDiaries } from "../scan/memory-diary";
 import { type StageStatus, parseState } from "../scan/parser";
 import { readQuestions } from "../scan/questions";
@@ -198,6 +198,7 @@ function buildBlockers(
         stage: f.stage,
         unit: f.unit,
         heading: q.heading,
+        kind: q.kind,
         rel: f.rel,
         since,
         waitingSec: Number.isFinite(parsed)
@@ -289,7 +290,10 @@ export function assemble(
   } catch {
     throw new NoRunError("none", root);
   }
-  const state = parseState(stateText);
+  // Display names come from the tree's own catalogue when it has one — the local table
+  // in scan/parser.ts is a snapshot of the engine's stage roster and had already gone
+  // stale (v2.7's `domain-design` / `contract-design` were missing).
+  const state = parseState(stateText, catalog ? (s) => catalog?.bySlug.get(s)?.name : undefined);
 
   const ledger = readAuditLedger(recordDir, isStage);
   if (ledger.events.length === 0) warnings.push("감사 기록 비어 있음 — hook 미발화 가능성");
@@ -319,9 +323,133 @@ export function assemble(
     now,
   });
 
+  // STATE / CATALOGUE COMPATIBILITY, measured rather than versioned.
+  //
+  // The engine refuses a state whose `State Version` does not match the compiled graph
+  // — `classifyStateVersion()` in aidlc-lib.ts, enforced by both `next`/`report` and
+  // `--doctor` — and names the reason: v2.7 (version 8) renamed `application-design` to
+  // `domain-design` and inserted `contract-design`, "so a pre-v8 state file's stage rows
+  // no longer match the compiled graph". Reading a v7 state against a v8 catalogue
+  // produces a plausible and wrong page, because every contract judgement below is made
+  // against the wrong contract.
+  //
+  // This does NOT hardcode the number. A pinned `8` would go stale the way the
+  // STAGE_DISPLAY table did, and it cannot see a hand-edited roster at all. What matters
+  // is the thing the version stands for, so compare the ROSTERS: a slug the state lists
+  // and the catalogue does not know (or the reverse) IS the incompatibility, and it is
+  // visible in the data on any version, present or missing.
+  //
+  // DIRECTION DEPENDS ON WHETHER THE VERSIONS AGREE, and the first reason given here for
+  // going one-directional was simply wrong: it claimed "a scope can exclude stages from
+  // enumeration", but the state contract says the engine emits "one checkbox row per
+  // compiled stage in that phase" and spells SKIP as a row (`- [ ] slug — SKIP: reason`).
+  // So when both sides declare a version AND the versions match, the state SHOULD list
+  // every compiled stage and a catalogue-only stage is a real divergence — compare both
+  // directions. When agreement cannot be established (either side silent), fall back to
+  // one direction: a state listing a stage the catalogue never heard of is unambiguous on
+  // any version, while the reverse there is just a thinner tree. That fallback is what
+  // keeps this repo's own version-less synthetic fixture from reporting a mismatch.
+  // The declared numbers, when BOTH sides declare one. The harness states the schema it
+  // supports in its own `aidlc-lib.ts`; the state file states the schema it was written
+  // against. A difference is what the engine refuses, and it is invisible to the roster
+  // check below when the roster happens to match — a state relabelled 7 on a v8 roster
+  // reads clean there, and the engine would still refuse to run it.
+  const harnessVersion = catalog?.stateVersion;
+  // A DECLARED difference blocks, exactly like a roster mismatch. Warning and then
+  // handing the same catalogue to the matrix anyway was the worst of both: the page said
+  // the two sources disagree and then judged v7 cells against the v8 contract regardless.
+  const versionMismatch =
+    harnessVersion !== undefined &&
+    state.stateVersion !== undefined &&
+    harnessVersion !== state.stateVersion;
+  if (versionMismatch) {
+    warnings.push(
+      `state.md 은 State Version ${state.stateVersion}, harness 는 ${harnessVersion} 을 지원합니다 (${catalog?.harnessDir}/tools/aidlc-lib.ts) — 엔진은 이 조합에서 next·report·doctor 를 모두 거부합니다. 다른 세대의 계약으로 판정할 수 없어 산출물 계약 판정을 내렸습니다`,
+    );
+  }
+  // Missing / empty / non-numeric is `unparseable` to the engine and also refused. It is
+  // reported, but it does NOT block: the version field being absent says nothing about
+  // whether the ROSTER diverged, and the roster check below is what actually measures
+  // that. Blocking here would degrade the matrix to 2-state — which hides blocked units
+  // — on the strength of a missing label alone.
+  // THREE-VALUED, because "verified" was claiming something never done: with the harness
+  // silent about its own version there is nothing to compare against, so the honest
+  // answer is `unknown`, not `verified`.
+  const stateVersionReadable = state.stateVersion !== undefined && /^\d+$/.test(state.stateVersion);
+  const stateCompat: StateCompat = versionMismatch
+    ? "incompatible"
+    : stateVersionReadable && harnessVersion !== undefined
+      ? "verified"
+      : "unknown";
+  if (!stateVersionReadable) {
+    warnings.push(
+      `state.md 의 State Version 을 읽을 수 없습니다 (${state.stateVersion === undefined ? "필드 없음" : `값: ${state.stateVersion}`}) — 엔진은 누락·빈 값·비수치를 모두 거부합니다(aidlc-lib.ts classifyStateVersion). 산출물 계약은 그대로 보여주지만 엔진과 동일한 완료 판정이라고 주장하지 않습니다`,
+    );
+  }
+
+  // TEAM / UNIT-MAJOR: the state's `## Unit Progress` table is the engine-owned authority
+  // for owner, per-unit stage state and gate, and it is parsed (scan/parser.ts) rather
+  // than reconstructed. What is reported here is when that authority is absent or in a
+  // shape the engine itself would refuse.
+  //
+  // AND, not OR. The contract is "present only when `Unit Ownership: team` AND
+  // `Construction Iteration: unit-major`", so `solo` + `unit-major` is a normal run with
+  // no such table and must not be told it is missing one. `team` WITHOUT `unit-major` is
+  // the misconfiguration, and gets its own line.
+  const team = state.unitOwnership?.toLowerCase() === "team";
+  const unitMajorMode = state.constructionIteration?.toLowerCase() === "unit-major";
+  const teamMode = team && unitMajorMode;
+  if (team && !unitMajorMode) {
+    warnings.push(
+      `Unit Ownership 은 team 인데 Construction Iteration 이 unit-major 가 아닙니다 (${state.constructionIteration ?? "없음"}) — 엔진 계약은 이 둘을 함께 요구하고, 그때만 Unit Progress 표가 존재합니다. 설정을 확인할 것`,
+    );
+  }
+  if (state.unitProgress?.malformed) {
+    warnings.push(
+      "state.md 의 `## Unit Progress` 표를 엔진이 정한 모양으로 읽지 못했습니다 (표가 줄 맨 앞에서 시작하지 않거나, 첫 열이 `unit` 이 아니거나, 구분선 폭이 헤더와 다름 — 엔진도 같은 조건에서 거부합니다). owner·유닛 게이트를 표시하지 않습니다",
+    );
+  } else if (teamMode && !state.unitProgress) {
+    warnings.push(
+      "team / unit-major 실행인데 state.md 에 `## Unit Progress` 절이 없습니다 — owner·유닛 게이트의 권위 있는 원천이 없어 아래 매트릭스는 디스크와 감사 기록으로 재구성한 값입니다",
+    );
+  }
+
+  const stateSlugs = state.phases.flatMap((p) => p.stages.map((st) => st.slug));
+  const unknownToCatalog = catalog ? stateSlugs.filter((sl) => !catalog?.bySlug.has(sl)) : [];
+  const versionsAgree =
+    harnessVersion !== undefined && state.stateVersion !== undefined && !versionMismatch;
+  const missingFromState =
+    catalog && versionsAgree
+      ? [...catalog.bySlug.keys()].filter((sl) => !stateSlugs.includes(sl))
+      : [];
+  const rosterMismatch = unknownToCatalog.length > 0 || missingFromState.length > 0;
+  if (rosterMismatch) {
+    const ver = state.stateVersion
+      ? `(State Version: ${state.stateVersion})`
+      : "(State Version 없음)";
+    const engineNote = "엔진도 이 조합을 거부합니다: aidlc-lib.ts classifyStateVersion";
+    warnings.push(
+      `state.md 과 stage 카탈로그의 stage 목록이 어긋납니다 ${ver}${unknownToCatalog.length > 0 ? ` · 카탈로그가 모르는 stage: ${unknownToCatalog.join(", ")}` : ""}${missingFromState.length > 0 ? ` · state 에 행이 없는 stage: ${missingFromState.join(", ")} (엔진은 SKIP 도 한 행씩 씁니다)` : ""}. 산출물 계약 판정을 신뢰할 수 없어 근사값으로 내렸습니다 (${engineNote})`,
+    );
+  }
+
   const construction = state.phases.find((p) => p.key === "construction");
   const matrix = construction
-    ? scanConstructionMatrix(recordDir, construction.stages, catalog)
+    ? // A mismatched roster means the catalogue describes a different run shape, so the
+      // matrix must not claim contract-awareness. Withholding the catalogue routes it
+      // through the existing, already-loud 2-state degradation instead of inventing a
+      // second "degraded" mode.
+      scanConstructionMatrix(
+        recordDir,
+        construction.stages,
+        rosterMismatch || versionMismatch ? undefined : catalog,
+        // Completion receipts come from the audit. Where a stage uses the unit
+        // lifecycle they outrank artifact presence — the engine's own rule.
+        readUnitLifecycle(ledger.events, { unitMajor: unitMajorMode, teamOwnership: team }),
+        // An unverified version does NOT throw the contract away — it withholds the claim
+        // that the judgement matches the engine's. Separate axes, not one.
+        stateCompat,
+      )
     : undefined;
 
   // Per-stage file listing for the overview's expandable rows, keyed the way the

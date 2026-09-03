@@ -346,6 +346,136 @@ describe("render", () => {
     expect(hours(1500)).toBe("25m");
   });
 
+  test("Unit Progress: the AND condition, and the table read as the authority", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "aidlc-team-"));
+    const sp = () =>
+      path.join(root, "aidlc/spaces/default/intents/260101-demo-migration/aidlc-state.md");
+    try {
+      fs.cpSync(FIXTURE, root, { recursive: true });
+      const base = fs.readFileSync(sp(), "utf-8");
+      const withFields = (extra: string, tail = "") => {
+        fs.writeFileSync(
+          sp(),
+          base.replace("- **State Version**: 7", `- **State Version**: 7${extra}`) + tail,
+        );
+        return assemble(root);
+      };
+
+      // Neither field: silent.
+      expect(assemble(root).warnings.some((w) => w.includes("Unit Progress"))).toBe(false);
+      // `solo` + `unit-major` is a NORMAL run with no such table. It warned when the
+      // condition was an OR, which told a correctly configured run it was missing one.
+      expect(
+        withFields(
+          "\n- **Unit Ownership**: solo\n- **Construction Iteration**: unit-major",
+        ).warnings.some((w) => w.includes("절이 없습니다")),
+      ).toBe(false);
+      // `team` without `unit-major` is the misconfiguration, and gets its own line.
+      expect(
+        withFields(
+          "\n- **Unit Ownership**: team\n- **Construction Iteration**: stage-major",
+        ).warnings.some((w) => w.includes("unit-major 가 아닙니다")),
+      ).toBe(true);
+      // Both, no table: the authority is missing and the matrix is only a reconstruction.
+      const teamOnly = withFields(
+        "\n- **Unit Ownership**: team\n- **Construction Iteration**: unit-major",
+      );
+      expect(teamOnly.warnings.find((w) => w.includes("절이 없습니다"))).toContain("Unit Progress");
+      // Both, WITH the table: parsed and rendered as the authority above the matrix.
+      const withTable = withFields(
+        "\n- **Unit Ownership**: team\n- **Construction Iteration**: unit-major",
+        "\n## Unit Progress\n\n| unit | owner | code-generation | gate |\n| --- | --- | --- | --- |\n| PU-A-core | jiho | [x] | [x] |\n",
+      );
+      expect(withTable.state.unitProgress?.rows[0]?.owner).toBe("jiho");
+      expect(withTable.warnings.some((w) => w.includes("절이 없습니다"))).toBe(false);
+      expect(renderBody(withTable)).toContain("유닛 진행 (state.md 권위)");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a declared State Version mismatch BLOCKS the contract, it does not just warn", () => {
+    // Warning and then handing the matrix the same catalogue was the worst of both: the
+    // page said the two sources disagree and then judged the cells against the newer
+    // contract regardless. The harness declares the schema it supports in its own
+    // aidlc-lib.ts, so the number is read from the tree, never pinned in this repo.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "aidlc-vm-"));
+    try {
+      fs.cpSync(FIXTURE, root, { recursive: true });
+      // The fixture's state says 7 and its harness declares nothing, so it is silent.
+      expect(assemble(root).matrix?.contractAware).toBe(true);
+      fs.writeFileSync(
+        path.join(root, ".kiro/tools/aidlc-lib.ts"),
+        'export const CURRENT_STATE_VERSION = "9";\n',
+      );
+      const m = assemble(root);
+      const warn = m.warnings.find((w) => w.includes("State Version 7"))!;
+      expect(warn).toContain("harness 는 9");
+      expect(m.matrix?.contractAware).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("an unreadable State Version is reported but does NOT block", () => {
+    // Missing/empty/non-numeric is `unparseable` to the engine and refused — worth
+    // saying. But it is no evidence the ROSTER diverged, and blocking on a missing label
+    // alone would degrade the matrix to 2-state, which hides blocked units.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "aidlc-vu-"));
+    try {
+      fs.cpSync(FIXTURE, root, { recursive: true });
+      const sp = path.join(
+        root,
+        "aidlc/spaces/default/intents/260101-demo-migration/aidlc-state.md",
+      );
+      fs.writeFileSync(
+        sp,
+        fs.readFileSync(sp, "utf-8").replace("- **State Version**: 7", "- **State Version**: "),
+      );
+      const m = assemble(root);
+      expect(m.warnings.some((w) => w.includes("State Version 을 읽을 수 없습니다"))).toBe(true);
+      // Two axes: the contract is still shown, the engine-equivalence claim is withheld.
+      expect(m.matrix?.contractAware).toBe(true);
+      expect(m.matrix?.stateCompat).toBe("unknown");
+      expect(renderBody(m)).toContain("확인되지 않은 계약");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a stage the catalogue does not know is a version mismatch, and it is loud", () => {
+    // The engine refuses a state whose version does not match the compiled graph
+    // (aidlc-lib.ts classifyStateVersion) — v2.7 renamed `application-design` to
+    // `domain-design`, so a pre-v8 state read against a v8 graph makes every contract
+    // judgement below it wrong. Detected from the ROSTER, not from a pinned number: a
+    // hardcoded `8` goes stale exactly as the STAGE_DISPLAY table did.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "aidlc-ver-"));
+    try {
+      fs.cpSync(FIXTURE, root, { recursive: true });
+      const statePath = path.join(
+        root,
+        "aidlc/spaces/default/intents/260101-demo-migration/aidlc-state.md",
+      );
+      const before = assemble(root);
+      expect(before.warnings.filter((w) => w.includes("카탈로그가 모르는"))).toEqual([]);
+      fs.writeFileSync(
+        statePath,
+        fs
+          .readFileSync(statePath, "utf-8")
+          .replace("] code-generation —", "] application-design —"),
+      );
+      const after = assemble(root);
+      const warn = after.warnings.find((w) => w.includes("카탈로그가 모르는"))!;
+      expect(warn).toContain("application-design");
+      expect(warn).toContain("State Version: 7");
+      // And the matrix stops claiming contract-awareness rather than judging cells
+      // against a contract from a different graph generation.
+      expect(after.matrix?.contractAware).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("the deferral panel names the route, the limit and the count", () => {
     const body = renderBody(m);
     expect(body).toContain("미뤄둔 결정");
@@ -358,7 +488,11 @@ describe("render", () => {
     expect(body).toContain("답이 보이지 않는다는 뜻");
     expect(body).toContain("다시 물어올 것");
     // 0 goes mute rather than shouting in the urgent colour.
-    expect(body).toContain('class="dfr-stat t-zero"');
+    expect(body).toContain('class="dfr-chip t-zero"');
+    // One row per ledger, each naming where it was read — six equal tiles used to
+    // assert that all six numbers measured the same thing.
+    expect(body).toContain("산출물 미결");
+    expect(body).toContain("합산하지 않습니다");
     // No ahead items in this fixture → no empty toggle inviting a dead click.
     expect(body).not.toContain("예정 단계로 배정됨");
     expect(body).toContain("확인되지 않은 전제 3건");

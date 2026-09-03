@@ -22,15 +22,36 @@
 // the ledger behind it, which is why "why are you asking me this again?" has no
 // answer on screen.
 //
-// TWO SHAPES, SPLIT CLEANLY BY PHASE. Measured across 51 sections in one run:
+// THE TABLE IS ONE SHAPE, NOT THE SHAPE. Measured across 51 sections in one run:
 //
 //   structured  39  `### Assumptions` (bullets) + `### Open questions` (a table)
 //   flat        12  bullets directly under the H2, each tagged `[assumption]`
 //
 // Every structured section was in `inception/` or `construction/`; every flat one
 // in `ideation/`. The structured table's header was `| 항목 | 배정 |` in 38 of 39,
-// giving 245 rows / 230 unique items. That table IS the deferral ledger: the last
-// column names the stage where the decision gets made.
+// giving 245 rows / 230 unique items — the last column names the stage where the
+// decision gets made.
+//
+// A SECOND RUN WROTE NO TABLE AT ALL, and reading only the table made the panel
+// report zero on a tree carrying 15 open questions. Measured over its 24 sections
+// (27 bullets, 0 table rows anywhere):
+//
+//   `### Open questions` bullets, `**OQ1**`-style ids        6   → items
+//   flat bullets with an `**OQ-xx**` id, untagged            9   → items
+//   flat bullets tagged `[assumption]`                       9   → assumptions
+//   `### Assumptions` bullets, `**AS1**`-style ids           3   → assumptions
+//   `None.`                                                 13  → declared empty
+//
+// So a bullet is placed by whichever marker THE ENGINE wrote — the `[assumption]`
+// tag, then a bold `**OQ**`/`**AS**` ledger id, then the enclosing subsection
+// heading. See flushBullet for the order and for why `### Assumptions` is not the
+// mirror of `### Open questions`. A bullet carries no 배정 cell, so every item read
+// this way is honestly `unassigned`: the owner on that tree lives in prose ("이후
+// 설계(Domain/Contract)") or in tags that are not stage slugs (`[mob: quality]`,
+// `[spec §11]`, `[ckb: C1]`), and rule 3 below forbids guessing from either.
+// One section on that tree is still unread — a numbered list of prose assumptions
+// with no id and no tag — which is why `sections` is now counted wherever the
+// heading appears, not only where the parse succeeded.
 //
 // THREE RULES THAT KEEP THE READ HONEST:
 //
@@ -152,8 +173,12 @@ export interface DeferralReport {
   /** Deduplicated assumptions. */
   assumptions: DeferralAssumption[];
   counts: Record<OwnerStatus, number>;
-  /** Per-owner rollup, highest count first. */
-  byOwner: { stage: string; status: OwnerStatus; count: number }[];
+  /**
+   * Per-owner rollup, highest count first. `stage` is absent for the no-owner
+   * buckets (`unassigned`, `nextCycle`) — this is a model, so it must not invent a
+   * display name for them; the render layer already owns the Korean labels.
+   */
+  byOwner: { stage?: string; status: OwnerStatus; count: number }[];
   /** Artifacts read. */
   artifacts: number;
   /** Artifacts carrying the mandated section. */
@@ -182,6 +207,28 @@ const TABLE_ROW_RE = /^\s*\|(.*?)\|?\s*$/;
 const NONE_RE = /^(?:none|n\/a|not applicable|없음|해당\s*없음)[.!。]?$/i;
 /** The engine writes the tag inside backticks (`` `[assumption]` ``); accept both. */
 const ASSUMPTION_TAG_RE = /`?\[assumption\]`?/i;
+/**
+ * A list item — `-`/`*`/`+` and ordered markers, all four observed in the wild.
+ * Group 1 is the indent, which decides whether a bullet is a ledger entry or a
+ * detail hanging off one; group 2 is the text.
+ */
+const LIST_ITEM_RE = /^(\s*)(?:[-*+]|\d+[.)])\s+(.*)$/;
+/** Just the marker, for stripping it off a line before the `None.` test. */
+const LIST_MARKER_RE = /^\s*(?:[-*+]|\d+[.)])\s+/;
+/**
+ * The ledger id the engine writes in bold at the head of a bullet — `**OQ1**`,
+ * `**OQ-US4**`, `**AS3**`. Group 1 is the whole id, group 2 the kind: `OQ` is an
+ * open question, `AS` an assumption. This is a marker the engine wrote, not a
+ * reading of the prose, which is why it is allowed to classify a bullet.
+ *
+ * Case-sensitive, and **at least one digit is required**. Without either, this
+ * pattern reads ordinary bold-led prose as a ledger entry: `**ASSUMPTIONS**`,
+ * `**AS-IS**` and `**Asset**` all matched an earlier `(OQ|AS)[-.A-Za-z0-9]*` form
+ * and invented an assumption apiece. The engine writes ids uppercase and numbered
+ * (`FR-1`, `ENT-001`, `BR1.1` are its own examples), so demanding a digit costs
+ * nothing real and closes the whole class.
+ */
+const LEDGER_ID_RE = /^\*\*((OQ|AS)[A-Z0-9.-]*\d[A-Z0-9.-]*[a-z]?)\*\*/;
 /** A kebab-case stage slug: at least two lowercase segments. */
 const SLUG_TOKEN_RE = /[a-z][a-z0-9]*(?:-[a-z0-9]+)+/g;
 const NEXT_CYCLE_RE = /(?:다음|이후|차기)\s*차수|next\s+cycle|이번\s*차수\s*밖/i;
@@ -234,18 +281,64 @@ export function parseDeferralSections(text: string): ParsedSection {
     let sub: "open" | "assumptions" | "other" | undefined;
     let pastSeparator = false;
     let bullet: string | undefined;
+    /** Indent of the line that opened `bullet` — 0 is a ledger entry, more is detail. */
+    let bulletIndent = 0;
     /** Non-blank body lines, and how many of them were an explicit "nothing". */
     let bodyLines = 0;
     let noneLines = 0;
     const rowsBefore = out.rows.length;
     const assumptionsBefore = out.assumptions.length;
 
+    /**
+     * Place one finished bullet in the right ledger, or drop it. Three engine-written
+     * signals decide, in this order — none of them is a reading of the prose:
+     *
+     *   1. `[assumption]` → an assumption. The tag is the engine's own marker and it
+     *      wins outright, so a bullet that has always been read as a 전제 keeps being
+     *      one even when it also carries an `OQ` id (5 such on the tree that forced
+     *      this widening — an engine slip, not something to reclassify silently).
+     *   2. A bold ledger id — `**OQ1**` → open question, `**AS1**` → assumption.
+     *   3. Failing an id, a TOP-LEVEL bullet under `### Open questions` → open
+     *      question. The heading is a declaration; `### Assumptions` deliberately is
+     *      NOT the mirror of it, because an untagged idless bullet there was measured
+     *      to be prose ("태그가 없는 불릿은 전제가 아니다"). This is the loosest of the
+     *      three signals, so it is the one that checks indent: a nested bullet is a
+     *      detail of the entry above it, and counting it split one decision into three.
+     *
+     * Anything else is dropped, as before. A `None.` sentinel is dropped whatever
+     * shape it arrives in — the engine writes it to say the ledger is EMPTY, so
+     * admitting `- None.` as an item both invents a decision named "None." and, by
+     * making the section non-empty, hides the declaration it was making.
+     */
     const flushBullet = () => {
-      if (bullet !== undefined && ASSUMPTION_TAG_RE.test(bullet)) {
-        const t = tidy(bullet.replace(ASSUMPTION_TAG_RE, ""));
-        if (t.length > 0) out.assumptions.push(t);
-      }
+      const b = bullet;
       bullet = undefined;
+      if (b === undefined) return;
+      if (ASSUMPTION_TAG_RE.test(b)) {
+        const t = tidy(b.replace(ASSUMPTION_TAG_RE, ""));
+        if (t.length > 0) out.assumptions.push(t);
+        return;
+      }
+      if (NONE_RE.test(tidy(b))) return;
+      const id = LEDGER_ID_RE.exec(b);
+      const kind = id
+        ? (id[2] ?? "") === "AS"
+          ? "assumption"
+          : "open"
+        : sub === "open" && bulletIndent === 0
+          ? "open"
+          : undefined;
+      if (kind === undefined) return;
+      // Keep the id, drop its bold markers: `**OQ1** …` → `OQ1 …`. The id is how a
+      // reader finds the row in the file and how sibling artifacts cross-reference it
+      // (`[stories: OQ-US4]`), so stripping it would cost more than the asterisks do.
+      const t = tidy(id ? b.replace(LEDGER_ID_RE, "$1") : b);
+      if (t.length === 0) return;
+      if (kind === "assumption") out.assumptions.push(t);
+      // A bullet has no 배정 cell. Leave it empty rather than mining the prose or the
+      // trailing bracket tags (`[mob: quality]`, `[spec §11]`) for an owner — they are
+      // not stage slugs, so resolveOwner reports `unassigned`, which is the truth.
+      else out.rows.push({ item: t, assignment: "" });
     };
 
     for (let j = i + 1; j < lines.length; j++) {
@@ -260,7 +353,7 @@ export function parseDeferralSections(text: string): ParsedSection {
       // open" even when the two mandated subsections are present.
       if (!s && line.trim().length > 0) {
         bodyLines++;
-        if (NONE_RE.test(tidy(line.replace(/^\s*[-*]\s+/, "")))) noneLines++;
+        if (NONE_RE.test(tidy(line.replace(LIST_MARKER_RE, "")))) noneLines++;
       }
       if (s) {
         flushBullet();
@@ -295,12 +388,13 @@ export function parseDeferralSections(text: string): ParsedSection {
         continue;
       }
 
-      // Bullets. Only tagged `[assumption]` ones are kept, and a bullet's
-      // continuation lines are folded in so a wrapped sentence stays whole.
-      const b = /^\s*[-*]\s+(.*)$/.exec(line);
+      // Bullets. flushBullet decides which ledger each one lands in; a bullet's
+      // continuation lines are folded in here so a wrapped sentence stays whole.
+      const b = LIST_ITEM_RE.exec(line);
       if (b) {
         flushBullet();
-        bullet = b[1] ?? "";
+        bulletIndent = (b[1] ?? "").length;
+        bullet = b[2] ?? "";
         continue;
       }
       if (bullet !== undefined && /^\s+\S/.test(line)) {
@@ -492,11 +586,16 @@ export function readDeferrals(recordDir: string, opts: DeferralOptions = {}): De
     // Cheap reject before the line walk: most artifacts do not carry the section.
     if (!/Assumptions\s*&\s*Open\s*Questions/i.test(text)) continue;
     const parsed = parseDeferralSections(text);
-    const found = parsed.rows.length > 0 || parsed.assumptions.length > 0;
-    if (!found && !parsed.declaredNone) continue;
+    // Count the section wherever it appears, before deciding what came out of it.
+    // Gating the tally on a successful read understated the denominator by exactly
+    // the sections whose shape this reader does not cover, so the panel's own header
+    // hid the gap it was reporting.
     sections += parsed.sections;
+    const found = parsed.rows.length > 0 || parsed.assumptions.length > 0;
     if (!found) {
-      emptySections++;
+      // Only an explicit `None.` is an empty section; a section this reader simply
+      // could not parse is not the engine claiming there is nothing open.
+      if (parsed.declaredNone) emptySections++;
       continue;
     }
     const rel = loc.relParts.join("/");
@@ -558,12 +657,19 @@ export function readDeferrals(recordDir: string, opts: DeferralOptions = {}): De
   >;
   for (const it of items) counts[it.ownerStatus]++;
 
-  const ownerRollup = new Map<string, { stage: string; status: OwnerStatus; count: number }>();
+  const ownerRollup = new Map<string, { stage?: string; status: OwnerStatus; count: number }>();
   for (const it of items) {
-    const stage = it.ownerStage ?? `(${it.ownerStatus})`;
-    const row = ownerRollup.get(stage);
+    // A no-owner bucket is keyed on its status, and carries NO stage — the previous
+    // `(${status})` placeholder was a display string built in the scan layer, and it
+    // reached the screen verbatim as a row labelled `(unassigned)` in a Korean UI.
+    // Prefixed so a bucket key can never collide with a real stage slug (no slug holds
+    // a `:`). It was a literal NUL byte for exactly one commit, which made the leak
+    // audit classify this whole file as binary and skip it — it said so, and the
+    // "119/122개 검사" line was read as normal. Keep source bytes printable.
+    const key = it.ownerStage ?? `status:${it.ownerStatus}`;
+    const row = ownerRollup.get(key);
     if (row) row.count++;
-    else ownerRollup.set(stage, { stage, status: it.ownerStatus, count: 1 });
+    else ownerRollup.set(key, { stage: it.ownerStage, status: it.ownerStatus, count: 1 });
   }
 
   return {
@@ -574,7 +680,7 @@ export function readDeferrals(recordDir: string, opts: DeferralOptions = {}): De
       (a, b) =>
         STATUS_RANK[a.status] - STATUS_RANK[b.status] ||
         b.count - a.count ||
-        a.stage.localeCompare(b.stage),
+        (a.stage ?? "").localeCompare(b.stage ?? ""),
     ),
     artifacts: located.length,
     sections,

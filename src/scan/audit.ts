@@ -133,12 +133,19 @@ export function parseAuditShard(text: string, shard: string, isStage?: IsStage):
 
     // Sensors use `Stage slug`; everything else `Stage`. ARTIFACT_* has neither.
     let stage = fields.Stage || fields["Stage slug"] || undefined;
-    let unit: string | undefined;
+    // A DIRECT `Unit` field beats anything inferred from `Context`, and dropping it lost
+    // a whole class of event. `audit-format.md` gives `UNIT_STARTED` / `UNIT_PAUSED` /
+    // `UNIT_RESUMED` / `UNIT_COMPLETED` the fields `Timestamp, Stage, Unit, Run floor`
+    // — no `Context` at all — and team gate rows carry `Unit` the same way. Reading only
+    // `Context` therefore left `event.unit` undefined on exactly the events that say
+    // which unit finished, which is also what the completion receipts are (see
+    // scan/matrix.ts): the ledger was carrying the answer and this parser threw it away.
+    let unit = fields.Unit || undefined;
 
     const ctx = fields.Context;
     if (ctx) {
       const resolved = parseContext(ctx, isStage);
-      unit = resolved.unit;
+      if (!unit) unit = resolved.unit;
       if (!stage) stage = resolved.stage;
     }
 

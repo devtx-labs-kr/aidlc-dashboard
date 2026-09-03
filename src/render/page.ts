@@ -179,6 +179,12 @@ table.mx tbody th { text-align:left; white-space:nowrap; font-weight:500; }
   font-size:var(--fs-1); cursor:help; }
 .mx-cell { font-size:var(--fs-4); line-height:1; cursor:help; }
 .c-complete { color:var(--ok); } .c-partial { color:var(--warn); } .c-absent { color:var(--line); }
+/* Artifacts met, receipt missing — the engine calls this UNCOVERED, so it must not wear
+   the completed colour. --accent2 is its own hue for the same reason 대화 has one. */
+.c-unsettled { color:var(--accent2); }
+/* "cannot be checked here" is not "not done" — its own mute tone, so it never reads as a
+   blocker the way .c-unsettled deliberately does. */
+.c-unverified { color:var(--mute); }
 .c-na { color:var(--muted); }
 .mx-n { color:var(--mute); font-variant-numeric:tabular-nums; padding-left:9px !important; }
 tr.mx-skip { opacity:.4; } tr.mx-skip td { font-size:var(--fs-1); color:var(--mute); }
@@ -190,29 +196,58 @@ tr.mx-skip { opacity:.4; } tr.mx-skip td { font-size:var(--fs-1); color:var(--mu
 .batch-unit { background:var(--line); border-radius:var(--r-pill); padding:1px 5px; font-size:var(--fs-1); }
 .batch-arrow { color:var(--mute); }
 
-.time-stats { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); border-block:1px solid var(--line);
-  margin-bottom:10px; }
+/* The window total is a HEADLINE, not a tile. It used to sit in a strip of six equal
+   tiles beside the five buckets, which read as six comparable numbers and invited an
+   addition that does not work — the five sum to the classified span, not to the window.
+   Its parts now live in the bar's legend, where the share is. */
+/* Still used by the rework strip (재작업 / 반려 / 승인 / 수정 회차 + two optional tiles).
+   auto-fit rather than a fixed 5, because at six tiles a fixed count leaves the last
+   one orphaned on a row of its own — the same defect the time buckets just shed. */
+.time-stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(112px,1fr));
+  border-block:1px solid var(--line); margin-bottom:10px; }
 .time-stats > div { min-width:0; padding:8px 10px; border-left:1px solid var(--line); }
 .time-stats > div:first-child { border-left:0; }
 .time-stat-n { display:block; font-size:var(--fs-5); line-height:1.2; font-weight:680;
   font-variant-numeric:tabular-nums; white-space:nowrap; }
 .time-stat-l { display:block; color:var(--mute); font-size:var(--fs-1); margin-top:2px; }
-.time-stats .wait .time-stat-n, .g-n.wait { color:var(--warn); }
-.time-stats .parked .time-stat-n, .g-n.parked { color:var(--accent); }
-.time-stats .observed .time-stat-n { color:var(--ok); }
-.time-stats .unknown .time-stat-n, .g-n.unknown { color:var(--mute); }
+.time-stats .unknown .time-stat-n { color:var(--mute); }
+
+.time-head { display:flex; align-items:baseline; gap:9px; flex-wrap:wrap; margin-bottom:9px;
+  padding-bottom:9px; border-bottom:1px solid var(--line); }
+.time-head-n { font-size:var(--fs-6); line-height:1.1; font-weight:700;
+  font-variant-numeric:tabular-nums; white-space:nowrap; }
+.time-head-l { font-size:var(--fs-2); color:var(--mute); }
+.time-head-sub { margin-left:auto; font-size:var(--fs-1); color:var(--mute); }
+.g-n.wait { color:var(--warn); }
+.g-n.parked { color:var(--accent); }
+/* 대화 gets --accent2, its own hue: it is neither wait (--warn) nor observed execution
+   (--ok) nor unexplained (--mute), and borrowing any of those three would make the
+   colour claim the attribution the bucket exists to refuse. */
+.g-n.conv { color:var(--accent2); }
+.g-n.unknown { color:var(--mute); }
 .time-breakdown { display:flex; width:100%; height:8px; overflow:hidden; background:var(--line);
   border-radius:var(--r-pill); }
 .time-breakdown > span { display:block; min-width:1px; }
 .time-breakdown .wait, .time-legend i.wait { background:var(--warn); }
 .time-breakdown .parked, .time-legend i.parked { background:var(--accent); }
 .time-breakdown .observed, .time-legend i.observed { background:var(--ok); }
+.time-breakdown .conv, .time-legend i.conv { background:var(--accent2); }
 .time-breakdown .unknown, .time-legend i.unknown { background:var(--mute); }
-.time-legend { display:flex; gap:5px 13px; flex-wrap:wrap; margin-top:6px; color:var(--mute);
-  font-size:var(--fs-1); }
-.time-legend span { display:inline-flex; align-items:center; gap:4px; }
-.time-legend i { width:7px; height:7px; border-radius:var(--r-pill); flex:none; }
-.time-legend b { color:var(--fg); font-weight:600; }
+/* A GRID, not a flex wrap: the legend now carries hours + label + share per entry, and
+   flex-wrapping five of those clipped the last one off the card edge. auto-fill lays
+   them out 2–3 per row at any card width with nothing cut. */
+.time-legend { display:grid; grid-template-columns:repeat(auto-fill,minmax(158px,1fr));
+  gap:3px 13px; margin-top:7px; color:var(--mute); font-size:var(--fs-2); }
+.time-legend .lgi { display:flex; align-items:baseline; gap:5px; min-width:0; cursor:help; }
+.time-legend i { width:7px; height:7px; border-radius:var(--r-pill); flex:none;
+  align-self:center; }
+.time-legend b { font-weight:660; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.time-legend b.wait { color:var(--warn); }
+.time-legend b.parked { color:var(--accent); }
+.time-legend b.observed { color:var(--ok); }
+.time-legend b.conv { color:var(--accent2); }
+.time-legend b.unknown { color:var(--fg); }
+.time-legend .mute { margin-left:auto; font-size:var(--fs-1); }
 .worker-stats { display:flex; flex-wrap:wrap; gap:4px 14px; margin:8px 0 3px; color:var(--mute);
   font-size:var(--fs-1); }
 .worker-stats b { color:var(--fg); font-size:var(--fs-2); font-variant-numeric:tabular-nums; }
@@ -247,15 +282,13 @@ tr.mx-skip { opacity:.4; } tr.mx-skip td { font-size:var(--fs-1); color:var(--mu
 .diary-table { min-width:520px; }
 .diary-table .g-name { max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 @media (max-width:700px) {
-  .time-stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
-  .time-stats > div:nth-child(3), .time-stats > div:nth-child(5) { border-left:0; }
-  .time-stats > div:nth-child(n+3) { border-top:1px solid var(--line); }
-  .time-stats > div:nth-child(5) { grid-column:1 / -1; }
-  .diary-stats, .dfr-stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  /* The headline's context line drops under the number instead of being pushed right. */
+  .time-head-sub { margin-left:0; flex-basis:100%; }
+  .diary-stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .diary-stat:nth-child(3) { border-left:0; border-top:1px solid var(--line); }
   .diary-stat:nth-child(4) { border-top:1px solid var(--line); }
-  .dfr-stat:nth-child(3) { border-left:0; border-top:1px solid var(--line); }
-  .dfr-stat:nth-child(4) { border-top:1px solid var(--line); }
+  /* The ledger rows already stack; only the big number needs to stop reserving width. */
+  .dfr-ledger { gap:9px; }
   .diary-columns { grid-template-columns:1fr; }
   .diary-group + .diary-group { border-left:0; border-top:1px solid var(--line); padding-left:0; }
 }
@@ -266,17 +299,27 @@ tr.mx-skip { opacity:.4; } tr.mx-skip td { font-size:var(--fs-1); color:var(--mu
    mute, so an empty "지난 단계" does not shout in red; and every row carries its own
    route — origin stage → assigned stage — which is how the reader judges direction
    without the panel asserting one. */
-.dfr-stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); border-block:1px solid var(--line);
-  margin:0 0 11px; }
-.dfr-stat { min-width:0; padding:8px 10px; border-left:1px solid var(--line); cursor:help; }
-.dfr-stat:first-child { border-left:0; }
-.dfr-stat-n { display:block; font-size:var(--fs-5); line-height:1.2; font-weight:680;
-  font-variant-numeric:tabular-nums; }
-.dfr-stat-l { display:block; color:var(--mute); font-size:var(--fs-1); margin-top:2px; }
-.dfr-stat.t-bad .dfr-stat-n { color:var(--bad); }
-.dfr-stat.t-warn .dfr-stat-n { color:var(--warn); }
-.dfr-stat.t-ok .dfr-stat-n { color:var(--ok); }
-.dfr-stat.t-mute .dfr-stat-n, .dfr-stat.t-zero .dfr-stat-n { color:var(--mute); }
+/* One ROW per ledger, not a tile strip — see ledgerRows() in render/deferrals.ts for
+   why (six equal tiles asserted six comparable numbers; only the first four are one
+   measurement, and the sixth wrapped alone and took the divider with it). */
+.dfr-ledgers { list-style:none; margin:0 0 9px; padding:0;
+  border-block:1px solid var(--line); }
+.dfr-ledger { display:flex; gap:13px; align-items:baseline; padding:9px 2px; }
+.dfr-ledger + .dfr-ledger { border-top:1px solid var(--line); }
+.dfr-ledger-n { flex:0 0 auto; min-width:2ch; text-align:right; font-size:var(--fs-5);
+  line-height:1.2; font-weight:680; font-variant-numeric:tabular-nums; }
+.dfr-ledger-body { min-width:0; }
+.dfr-ledger-h { font-size:var(--fs-2); font-weight:600; }
+.dfr-ledger-src { color:var(--mute); font-weight:400; font-size:var(--fs-1); }
+.dfr-chips { display:flex; flex-wrap:wrap; gap:5px; margin-top:5px; }
+.dfr-chip { font-size:var(--fs-1); color:var(--mute); border:1px solid var(--line);
+  border-radius:var(--r-pill); padding:1px 8px; white-space:nowrap; cursor:help; }
+.dfr-chip b { font-variant-numeric:tabular-nums; }
+.dfr-ledger-n.t-bad, .dfr-chip.t-bad b { color:var(--bad); }
+.dfr-ledger-n.t-warn, .dfr-chip.t-warn b { color:var(--warn); }
+.dfr-ledger-n.t-ok, .dfr-chip.t-ok b { color:var(--ok); }
+.dfr-ledger-n.t-mute, .dfr-chip.t-mute b, .dfr-chip.t-zero b { color:var(--mute); }
+.dfr-chip.t-bad, .dfr-chip.t-warn { color:var(--fg); border-color:currentColor; }
 .dfr-focus > h3 { margin:11px 0 7px; font-size:var(--fs-2); font-weight:650; }
 .dfr-focus:first-of-type > h3 { margin-top:0; }
 .dfr-list { list-style:none; margin:0; padding:0; }
@@ -334,7 +377,8 @@ details summary { cursor:pointer; font-size:var(--fs-2); color:var(--mute); marg
   box-shadow:0 0 0 1px var(--mute) inset; }
 .g-bar > i { display:block; height:100%; min-width:1px; }
 .g-bar > i.wait { background:var(--warn); } .g-bar > i.parked { background:var(--accent); }
-.g-bar > i.observed { background:var(--ok); } .g-bar > i.unknown { background:var(--mute); }
+.g-bar > i.observed { background:var(--ok); } .g-bar > i.conv { background:var(--accent2); }
+.g-bar > i.unknown { background:var(--mute); }
 .g-bar.k-done { box-shadow:0 0 0 1px var(--accent2) inset; }
 .g-bar.k-skip { box-shadow:0 0 0 1px var(--mute) inset; opacity:.55; }
 .g-bar.k-await { box-shadow:0 0 0 1px var(--warn) inset; }
@@ -356,9 +400,21 @@ details summary { cursor:pointer; font-size:var(--fs-2); color:var(--mute); marg
 .g-where { color:var(--accent); font-size:var(--fs-1); }
 i.lg { display:inline-block; width:9px; height:9px; border-radius:2px; vertical-align:-1px; }
 i.lg.wait { background:var(--warn); } i.lg.parked { background:var(--accent); }
-i.lg.observed { background:var(--ok); } i.lg.unknown { background:var(--mute); }
+i.lg.observed { background:var(--ok); } i.lg.conv { background:var(--accent2); }
+i.lg.unknown { background:var(--mute); }
 .g-load { color:var(--mute); font-size:var(--fs-1); max-width:150px; overflow:hidden;
   text-overflow:ellipsis; white-space:nowrap; }
+/* The human's rejection reason, in full, BELOW the numeric table rather than inside
+   it. One measured rejection is 1042 characters with no line breaks: in a cell beside
+   five numeric columns it was clamped by .g-load's 150px nowrap (the clip landing on a
+   nested <li>, where text-overflow cannot reach) and sliced at 400 characters on top.
+   Full card width is what "shown verbatim" actually requires. */
+.why-all { margin-top:9px; }
+.why-list { list-style:none; margin:6px 0 0; padding:0; display:grid; gap:9px; }
+.why-item { border-left:2px solid var(--line); padding-left:11px; }
+.why-head { display:flex; gap:9px; align-items:baseline; font-size:var(--fs-1); }
+.why-text { margin:3px 0 0; font-size:var(--fs-2); line-height:1.65;
+  white-space:pre-wrap; overflow-wrap:anywhere; }
 .tag-lead { font-size:var(--fs-1); color:var(--accent); border:1px solid currentColor;
   border-radius:var(--r-ctl); padding:0 5px; white-space:nowrap; cursor:help; }
 .gantt tbody td, .gantt tbody th { line-height:1.35; }

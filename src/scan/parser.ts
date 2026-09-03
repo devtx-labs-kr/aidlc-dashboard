@@ -23,7 +23,18 @@ export const PHASE_DISPLAY: Record<PhaseKey, string> = {
   operation: "Operation",
 };
 
-// Stage slug → display name. Mirrors STAGE_DISPLAY in aidlc-statusline.ts.
+/**
+ * Stage slug → display name, for a workspace with NO catalogue. Mirrors STAGE_DISPLAY
+ * in aidlc-statusline.ts.
+ *
+ * This is the fallback, not the source: a hardcoded roster of the engine's stages goes
+ * stale by construction, and it had. v2.7 renamed `application-design` to
+ * `domain-design` and added `contract-design`, so on a real run parked at
+ * **domain-design** the panel printed the current stage as raw kebab-case beside
+ * "Refined Mockups" — while still carrying the retired name. `stageDisplay()` asks the
+ * workspace's own `stage-graph.json` first for that reason; the retired entry stays
+ * because an older tree can still hold it in `aidlc-state.md`.
+ */
 export const STAGE_DISPLAY: Record<string, string> = {
   "workspace-scaffold": "Workspace Scaffold",
   "workspace-detection": "Workspace Detection",
@@ -40,7 +51,10 @@ export const STAGE_DISPLAY: Record<string, string> = {
   "requirements-analysis": "Requirements Analysis",
   "user-stories": "User Stories",
   "refined-mockups": "Refined Mockups",
+  // Retired in v2.7 (→ domain-design). Kept so an older tree still reads.
   "application-design": "Application Design",
+  "domain-design": "Domain Design",
+  "contract-design": "Contract Design",
   "units-generation": "Units Generation",
   "delivery-planning": "Delivery Planning",
   "functional-design": "Functional Design",
@@ -58,6 +72,33 @@ export const STAGE_DISPLAY: Record<string, string> = {
   "performance-validation": "Performance Validation",
   "feedback-optimization": "Feedback & Optimization",
 };
+
+/**
+ * A slug with no name anywhere: `nfr-design` → `Nfr Design`. Never leave raw kebab-case
+ * on screen beside title-cased siblings — that is how a missing table entry reads as a
+ * different KIND of thing rather than as a missing name.
+ */
+function titleCase(slug: string): string {
+  return slug
+    .split("-")
+    .map((w) => (w.length > 0 ? w[0]!.toUpperCase() + w.slice(1) : w))
+    .join(" ");
+}
+
+/**
+ * Display name for a stage slug, most authoritative source first:
+ *
+ *   1. the workspace's own `stage-graph.json` (regenerated per harness release, so it
+ *      cannot go stale and it knows stages this file has never heard of),
+ *   2. STAGE_DISPLAY, for a tree with no harness dir — the common case for a sync copy,
+ *   3. the title-cased slug.
+ */
+export function stageDisplay(
+  slug: string,
+  fromCatalog?: (slug: string) => string | undefined,
+): string {
+  return fromCatalog?.(slug) ?? STAGE_DISPLAY[slug] ?? titleCase(slug);
+}
 
 // Agent slug → display name. Mirrors the *.md frontmatter display_name values
 // in the v2 ruleset (kiro-ide/agents). The orchestrator pseudo-agent has no
@@ -165,6 +206,28 @@ export interface PhaseInfo {
 export interface AidlcState {
   project: string;
   projectType: string;
+  /**
+   * `State Version` verbatim, or undefined when the field is missing. The engine's
+   * `classifyStateVersion()` refuses a state whose version does not match the compiled
+   * graph — v2.7 (version 8) renamed `application-design` to `domain-design` and added
+   * `contract-design`, so a pre-v8 file's stage rows no longer match. This reader does
+   * not enforce a number (that would go stale exactly as STAGE_DISPLAY did); assemble
+   * cross-checks the ROSTER against the catalogue instead. The field is carried so the
+   * screen can state what the tree declares.
+   */
+  stateVersion?: string;
+  /**
+   * `Unit Ownership` / `Construction Iteration`, and whether the state carries the
+   * engine-owned `## Unit Progress` projection. Read but NOT interpreted: in
+   * `team` + `unit-major` that table — not the disk — is the authority for owner,
+   * receipt, review, gate and merged state. Carried so `assemble` can say the panel is
+   * not reading it rather than quietly showing a reconstruction. See CLAUDE.md.
+   */
+  unitOwnership?: string;
+  constructionIteration?: string;
+  hasUnitProgress: boolean;
+  /** The parsed `## Unit Progress` table, when the state carries one. */
+  unitProgress?: UnitProgress;
   scope: string;
   lifecyclePhase: string;
   currentStage: string;
@@ -278,7 +341,10 @@ function sliceSection(text: string, heading: string): string {
  *   - [x] workspace-scaffold — EXECUTE
  *   - [ ] reverse-engineering — SKIP
  */
-export function parseStages(text: string): Map<string, StageInfo[]> {
+export function parseStages(
+  text: string,
+  catalogName?: (slug: string) => string | undefined,
+): Map<string, StageInfo[]> {
   const byPhase = new Map<string, StageInfo[]>();
   const lines = text.split(/\r?\n/);
   let current: string | null = null;
@@ -315,7 +381,7 @@ export function parseStages(text: string): Map<string, StageInfo[]> {
     const isSkipMarker = /\bSKIP\b/.test(line);
     byPhase.get(current)?.push({
       slug,
-      display: STAGE_DISPLAY[slug] ?? slug,
+      display: stageDisplay(slug, catalogName),
       status: stageStatusFromBox(box, isSkipMarker),
       execute: !isSkipMarker,
       ...(currentBolt !== undefined ? { bolt: currentBolt } : {}),
@@ -433,9 +499,23 @@ function buildConstructionBatches(text: string, bolts: BoltInfo[]): BatchInfo[] 
   return batches.length > 0 ? batches : undefined;
 }
 
-export function parseState(text: string): AidlcState {
+export function parseState(
+  text: string,
+  /**
+   * Name lookup from the workspace's own stage catalogue, when one was found. Passing
+   * it makes the display names come from the tree being read rather than from this
+   * file's snapshot of the engine — see `stageDisplay`.
+   */
+  catalogName?: (slug: string) => string | undefined,
+): AidlcState {
   const project = extractField(text, "Project");
   const projectType = extractField(text, "Project Type");
+  const stateVersion = extractField(text, "State Version");
+  const unitOwnership = extractField(text, "Unit Ownership");
+  const constructionIteration = extractField(text, "Construction Iteration");
+  // `## Unit Progress` is an engine-owned projection present only in team/unit-major.
+  const unitProgress = parseUnitProgress(text);
+  const hasUnitProgress = unitProgress !== undefined;
   const scope = extractField(text, "Scope");
   const lifecyclePhase = extractField(text, "Lifecycle Phase");
   const currentStage = extractField(text, "Current Stage");
@@ -447,7 +527,7 @@ export function parseState(text: string): AidlcState {
   const currentBolt = extractField(text, "Current Bolt");
 
   const declared = parseDeclaredPhaseStatus(text);
-  const stagesByPhase = parseStages(text);
+  const stagesByPhase = parseStages(text, catalogName);
 
   const phases: PhaseInfo[] = [];
   let overallDone = 0;
@@ -505,10 +585,15 @@ export function parseState(text: string): AidlcState {
   return {
     project,
     projectType,
+    ...(stateVersion ? { stateVersion } : {}),
+    ...(unitOwnership ? { unitOwnership } : {}),
+    ...(constructionIteration ? { constructionIteration } : {}),
+    hasUnitProgress,
+    ...(unitProgress ? { unitProgress } : {}),
     scope,
     lifecyclePhase,
     currentStage,
-    currentStageDisplay: STAGE_DISPLAY[currentStage] ?? currentStage,
+    currentStageDisplay: stageDisplay(currentStage, catalogName),
     nextStage,
     status,
     activeAgent,
@@ -523,4 +608,116 @@ export function parseState(text: string): AidlcState {
     ...(constructionBolts ? { constructionBolts, currentBolt } : {}),
     ...(constructionBatches ? { constructionBatches } : {}),
   };
+}
+
+/**
+ * One row of the state's `## Unit Progress` table — the engine-owned projection that is
+ * authoritative for owner, per-unit stage state and gate in `team` + `unit-major`.
+ *
+ * PARSED THE WAY THE ENGINE PARSES IT, not from the prose template. `aidlc-state.ts::
+ * parseUnitProgressTable` locates the section with `/^## Unit Progress\r?$/m`, takes the
+ * first `|` line as the header, requires `header[0] === "unit"` and a separator row of
+ * the same width, then keys rows by their first cell. Mirroring that is why this is
+ * implementable at all: an earlier note here refused to write it for want of a real tree
+ * to measure, which was the right instinct about the TEMPLATE and the wrong conclusion
+ * about the WRITER — reading the writer's own format is the same move as preferring
+ * `stage-graph.json` over a hardcoded stage list.
+ *
+ * COLUMNS ARE READ BY HEADER, never by position. Between `unit` and `gate` sit "per-unit
+ * Construction stage columns in graph order", and the set is whatever the graph compiled;
+ * an optional `merged` column may follow. Fixed indices would mis-read every run whose
+ * stage set differs.
+ */
+export interface UnitProgressRow {
+  unit: string;
+  /** `-` until the claim increment supplies ownership; kept verbatim. */
+  owner?: string;
+  /** Stage column header → checkbox status, for the columns this table carries. */
+  stages: Record<string, StageStatus>;
+  /** The `gate` cell's status, when the table carries that column. */
+  gate?: StageStatus;
+  /** The `merged` cell verbatim, when present — optional in the contract. */
+  merged?: string;
+}
+
+export interface UnitProgress {
+  rows: UnitProgressRow[];
+  /** Stage column headers in table order, i.e. compiled graph order. */
+  stageColumns: string[];
+  /** True when the section exists but could not be parsed to the engine's shape. */
+  malformed: boolean;
+}
+
+/** Checkbox cell → status, using the same vocabulary as `## Stage Progress`. */
+function cellStatus(cell: string): StageStatus | undefined {
+  const m = /^\[(.)\]$/.exec(cell.trim());
+  if (!m) return undefined;
+  return stageStatusFromBox(m[1] ?? " ", false);
+}
+
+/**
+ * Read `## Unit Progress`. Returns undefined when the section is absent (the normal case
+ * — it exists only in team/unit-major). Never throws; a shape the engine would refuse
+ * comes back `malformed` with no rows, so the panel can say so instead of guessing.
+ */
+export function parseUnitProgress(text: string): UnitProgress | undefined {
+  const head = /^##[ \t]+Unit Progress[ \t]*$/m.exec(text.replace(/\r\n/g, "\n"));
+  if (!head) return undefined;
+  const body = text.replace(/\r\n/g, "\n").slice(head.index + head[0].length);
+  const section = body.split(/^## /m)[0] ?? "";
+  const lines = section.split("\n");
+  // `startsWith("|")` with NO trim, because that is exactly what the engine accepts
+  // (`lines.findIndex((line) => line.startsWith("|"))`). Tolerating an indented table here
+  // meant calling a table "authoritative" that `aidlc-state.ts` would refuse outright.
+  const first = lines.findIndex((l) => l.startsWith("|"));
+  if (first < 0) return { rows: [], stageColumns: [], malformed: true };
+  const table = lines
+    .slice(first)
+    .filter((l) => l.startsWith("|"))
+    .map((l) =>
+      l
+        .split("|")
+        .slice(1, -1)
+        .map((c) => c.trim()),
+    );
+  const header = table[0];
+  const separator = table[1];
+  // The engine's own two guards: `header[0]` must be `unit`, and the separator must be
+  // the same width. Anything else it calls "Invalid Unit Progress table header".
+  if (!header || !separator || header[0]?.toLowerCase() !== "unit") {
+    return { rows: [], stageColumns: [], malformed: true };
+  }
+  if (separator.length !== header.length) return { rows: [], stageColumns: [], malformed: true };
+
+  const lower = header.map((h) => h.toLowerCase());
+  const ownerAt = lower.indexOf("owner");
+  const gateAt = lower.indexOf("gate");
+  const mergedAt = lower.indexOf("merged");
+  const stageAt = header
+    .map((h, i) => ({ h, i }))
+    .filter(({ i }) => i !== 0 && i !== ownerAt && i !== gateAt && i !== mergedAt);
+
+  const rows: UnitProgressRow[] = [];
+  for (const cells of table.slice(2)) {
+    if (cells.length !== header.length) continue;
+    if (cells.every((c) => /^-+$/.test(c))) continue;
+    const unit = cells[0];
+    if (!unit) continue;
+    const stages: Record<string, StageStatus> = {};
+    for (const { h, i } of stageAt) {
+      const st = cellStatus(cells[i] ?? "");
+      if (st) stages[h] = st;
+    }
+    const owner = ownerAt >= 0 ? cells[ownerAt] : undefined;
+    const gate = gateAt >= 0 ? cellStatus(cells[gateAt] ?? "") : undefined;
+    const merged = mergedAt >= 0 ? cells[mergedAt] : undefined;
+    rows.push({
+      unit,
+      ...(owner ? { owner } : {}),
+      stages,
+      ...(gate ? { gate } : {}),
+      ...(merged ? { merged } : {}),
+    });
+  }
+  return { rows, stageColumns: stageAt.map(({ h }) => h), malformed: false };
 }

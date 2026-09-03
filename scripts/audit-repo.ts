@@ -54,6 +54,13 @@ const EXEMPT = new Set(["scripts/leak-patterns.ts", "scripts/audit-repo.ts"]);
  * is on the CONTENT now, not the name.
  */
 const MAX_BYTES = 4 * 1024 * 1024;
+/**
+ * Extensions whose files must be text. Used ONLY to turn a binary-looking one into a
+ * failure — never to decide what gets read, which is the mistake the comment above
+ * records. A real binary keeps being skipped-and-named; a `.ts` that looks binary is a
+ * defect that silently removed a file from this audit's coverage.
+ */
+const TEXT_EXT = /\.(?:ts|tsx|js|mjs|cjs|json|md|css|html|sh|cmd|ps1|toml|yml|yaml|txt)$/i;
 
 function git(...args: string[]): string {
   const r = spawnSync("git", args, { cwd: ROOT, encoding: "utf-8", maxBuffer: 1 << 28 });
@@ -146,6 +153,21 @@ for (const file of files) {
     continue; // deleted between listing and read
   }
   if (body.includes("\u0000")) {
+    // A NUL in a SOURCE file is not a legitimate skip, it is a defect: the file goes
+    // unchecked and the only trace is one line in a PASSING run's output. That is
+    // exactly what happened — a stray NUL in a Map key took `src/scan/deferrals.ts` out
+    // of the audit for a commit, the run printed `119/122개 검사`, and the number read
+    // as normal. So a text-extension file that looks binary FAILS instead of skipping.
+    if (TEXT_EXT.test(file)) {
+      hits.push({
+        file,
+        line: 1,
+        why: "소스 파일에 NUL 바이트 — 이 파일은 검사되지 않는다",
+        redacted: "NUL",
+        excerpt: "출력 가능한 문자로 교체할 것 (감사가 바이너리로 판정해 건너뛴다)",
+      });
+      continue;
+    }
     skipped.push(`${file} (바이너리)`);
     continue;
   }

@@ -11,8 +11,20 @@ function blockerCard(b: Blocker): string {
   const where = b.unit ? `${b.unit} · ${b.stage}` : b.stage;
   const tone = b.isCurrentStage ? "bad" : "warn";
   const label = b.isCurrentStage ? "현재 stage" : "이전 stage (파킹된 질문)";
+  // A gate confirmation is a different ask: the remedy is picking one of the
+  // engine's fixed options (`Looks correct` / `Request changes`, `A. Accept
+  // assumptions` / `B. …`) or writing the "what should change" feedback, not
+  // answering a question. Naming it saves the reader opening the file to find out.
+  const gate =
+    b.kind === "confirmation"
+      ? pill(
+          "게이트 확인",
+          tone,
+          "질문이 아니라 승인 관문의 확인 항목입니다 — 엔진이 정한 선택지를 고르거나 수정 요청 사유를 적어야 진행됩니다",
+        )
+      : "";
   return `<div class="blocker ${tone}">
-  <div class="blocker-head">${pill(label, tone)}<span class="blocker-where">${esc(where)}</span>
+  <div class="blocker-head">${pill(label, tone)}${gate}<span class="blocker-where">${esc(where)}</span>
     <span class="blocker-age">${esc(dur(b.waitingSec))} 대기</span></div>
   <div class="blocker-q">${esc(b.heading)}</div>
   <div class="blocker-path">${esc(b.rel)} · ${esc(shortTs(b.since))}</div>
